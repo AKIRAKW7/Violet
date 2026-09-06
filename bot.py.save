@@ -1,9 +1,8 @@
-import os
 import discord
 from discord import app_commands
 
 # =========================
-# CONFIGURACIÓN
+# CONFIGURACIÓN DE VIOLET
 # =========================
 
 intents = discord.Intents.default()
@@ -32,7 +31,7 @@ async def on_ready():
 
 
 # =========================
-# /HOLA
+# COMANDO /HOLA
 # =========================
 
 @arbol.command(
@@ -40,37 +39,33 @@ async def on_ready():
     description="Violet te saluda"
 )
 async def hola(interaction: discord.Interaction):
-
     await interaction.response.send_message(
-        "¡Hola! 💜🐱 Soy Violet."
+        f"¡Hola, {interaction.user.mention}! 💜🐾"
     )
 
 
 # =========================
-# /AYUDA
+# COMANDO /AYUDA
 # =========================
 
 @arbol.command(
     name="ayuda",
-    description="Muestra los comandos de Violet"
+    description="Muestra todos los comandos de Violet"
 )
 async def ayuda(interaction: discord.Interaction):
 
     embed = discord.Embed(
         title="💜 Menú de Ayuda — Violet",
-        description="Estos son los sistemas disponibles:",
-        color=discord.Color.purple()
+        description=(
+            "¡Hola! Soy **Violet**, tu bot multifunción. 🐾\n\n"
+            "Estos son los sistemas que iremos incorporando:"
+        ),
+        color=0x9B59B6
     )
 
     embed.add_field(
         name="🎮 Diversión",
-        value="`/hola`\nSaluda a Violet.",
-        inline=False
-    )
-
-    embed.add_field(
-        name="📜 Servidor",
-        value="`/reglas`\nMuestra las reglas del servidor.",
+        value="`/hola`\nPróximamente más comandos.",
         inline=False
     )
 
@@ -118,94 +113,16 @@ async def ayuda(interaction: discord.Interaction):
 
 
 # =========================
-# /REGLAS
-# =========================
-
-@arbol.command(
-    name="reglas",
-    description="Muestra las reglas del servidor"
-)
-async def reglas(interaction: discord.Interaction):
-
-    embed = discord.Embed(
-        title="📜 Reglas del servidor",
-        description=(
-            "Lee y respeta las siguientes reglas "
-            "para mantener una buena comunidad."
-        ),
-        color=discord.Color.purple()
-    )
-
-    embed.add_field(
-        name="1️⃣ Respeto",
-        value=(
-            "Trata a todos los miembros con respeto. "
-            "No se permiten insultos, acoso ni discriminación."
-        ),
-        inline=False
-    )
-
-    embed.add_field(
-        name="2️⃣ Spam",
-        value=(
-            "No hagas spam, flood ni envíes mensajes "
-            "repetitivos."
-        ),
-        inline=False
-    )
-
-    embed.add_field(
-        name="3️⃣ Contenido",
-        value=(
-            "No compartas contenido ilegal, extremadamente "
-            "ofensivo o inapropiado."
-        ),
-        inline=False
-    )
-
-    embed.add_field(
-        name="4️⃣ Publicidad",
-        value=(
-            "No hagas publicidad de otros servidores, "
-            "redes o servicios sin autorización."
-        ),
-        inline=False
-    )
-
-    embed.add_field(
-        name="5️⃣ Canales",
-        value=(
-            "Utiliza cada canal para el propósito correspondiente "
-            "y respeta sus indicaciones."
-        ),
-        inline=False
-    )
-
-    embed.add_field(
-        name="6️⃣ Staff",
-        value=(
-            "Respeta las decisiones del equipo de moderación. "
-            "Si tienes un problema, contacta al staff."
-        ),
-        inline=False
-    )
-
-    embed.set_footer(
-        text="Violet • Reglas del servidor"
-    )
-
-    await interaction.response.send_message(embed=embed)
-
-
-# =========================
 # INICIAR VIOLET
 # =========================
+
+# IMPORTANTE:
+# Coloca aquí tu NUEVO token.
+# No compartas este token con nadie
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 if not TOKEN:
-    raise RuntimeError(
-        "Falta la variable de entorno DISCORD_TOKEN"
-    )
+    raise RuntimeError("Falta la variable DISCORD_TOKEN")
 
 bot.run(TOKEN)
