@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.db
+*.backup*
+bot.py.save.*
+earch pynacl
+.env
+bot_backup_*.py
+database_backup_*.py
+bot.p
+bot.py.*
