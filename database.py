@@ -40,6 +40,11 @@ async def init_db():
                 "ALTER TABLE users ADD COLUMN luck INTEGER DEFAULT 0"
             )
 
+        if "bank_balance" not in columns:
+            await db.execute(
+                "ALTER TABLE users ADD COLUMN bank_balance INTEGER DEFAULT 0"
+            )
+
         await db.execute("""
             CREATE TABLE IF NOT EXISTS pets (
                 user_id INTEGER NOT NULL,
@@ -149,6 +154,68 @@ async def init_db():
             )
         """)
     
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS security_config (
+                guild_id INTEGER PRIMARY KEY,
+                antispam INTEGER DEFAULT 1,
+                antiraid INTEGER DEFAULT 1,
+                antinuke INTEGER DEFAULT 1,
+                link_protection INTEGER DEFAULT 0,
+                quarantine_role_id INTEGER DEFAULT 0,
+                log_channel_id INTEGER DEFAULT 0,
+                raid_threshold INTEGER DEFAULT 8,
+                raid_window INTEGER DEFAULT 10,
+                spam_messages INTEGER DEFAULT 6,
+                spam_window INTEGER DEFAULT 5
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS security_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER DEFAULT 0,
+                action TEXT NOT NULL,
+                reason TEXT,
+                created_at INTEGER NOT NULL
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS security_strikes (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                strikes INTEGER DEFAULT 0,
+                last_strike INTEGER DEFAULT 0,
+                PRIMARY KEY (guild_id, user_id)
+            )
+        """)
+
+        await db.commit()
+
+
+async def add_security_log(
+    guild_id,
+    user_id,
+    action,
+    reason
+):
+    import time
+
+    async with aiosqlite.connect(DB_NAME) as db:
+
+        await db.execute("""
+            INSERT INTO security_logs
+            (guild_id, user_id, action, reason, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            guild_id,
+            user_id,
+            action,
+            reason,
+            int(time.time())
+        ))
+
         await db.commit()
 
 
@@ -444,6 +511,82 @@ async def get_partner(user_id, guild_id):
         row = await cursor.fetchone()
 
         return row[0] if row else 0
+
+
+async def get_bank_balance(user_id, guild_id):
+
+    await get_user(user_id, guild_id)
+
+    async with aiosqlite.connect(DB_NAME) as db:
+
+        cursor = await db.execute("""
+            SELECT bank_balance
+            FROM users
+            WHERE user_id = ? AND guild_id = ?
+        """, (user_id, guild_id))
+
+        row = await cursor.fetchone()
+
+        return row[0] if row else 0
+
+
+async def deposit_bank(user_id, guild_id, amount):
+
+    if amount <= 0:
+        return False
+
+    user = await get_user(user_id, guild_id)
+
+    if user[2] < amount:
+        return False
+
+    async with aiosqlite.connect(DB_NAME) as db:
+
+        cursor = await db.execute("""
+            UPDATE users
+            SET balance = balance - ?,
+                bank_balance = bank_balance + ?
+            WHERE user_id = ? AND guild_id = ?
+              AND balance >= ?
+        """, (
+            amount,
+            amount,
+            user_id,
+            guild_id,
+            amount
+        ))
+
+        await db.commit()
+
+        return cursor.rowcount > 0
+
+
+async def withdraw_bank(user_id, guild_id, amount):
+
+    if amount <= 0:
+        return False
+
+    await get_user(user_id, guild_id)
+
+    async with aiosqlite.connect(DB_NAME) as db:
+
+        cursor = await db.execute("""
+            UPDATE users
+            SET bank_balance = bank_balance - ?,
+                balance = balance + ?
+            WHERE user_id = ? AND guild_id = ?
+              AND bank_balance >= ?
+        """, (
+            amount,
+            amount,
+            user_id,
+            guild_id,
+            amount
+        ))
+
+        await db.commit()
+
+        return cursor.rowcount > 0
 
 
 async def add_item(user_id, guild_id, item, quantity=1):
@@ -1170,6 +1313,327 @@ async def get_collection_count(guild_id, user_id, category):
         return resultado[0] if resultado else 0
 
 # =========================================================
+# VIOLET MARKET — SISTEMA DE INVERSIONES
+# =========================================================
+
+async def init_violet_market():
+    async with aiosqlite.connect(DB_NAME) as db:
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS violet_market (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                price REAL DEFAULT 100.0,
+                previous_price REAL DEFAULT 100.0,
+                highest_price REAL DEFAULT 100.0,
+                lowest_price REAL DEFAULT 100.0,
+                total_invested REAL DEFAULT 0,
+                last_update TEXT
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS violet_market_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                price REAL NOT NULL,
+                change_percent REAL NOT NULL,
+                timestamp TEXT NOT NULL
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS violet_investments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                amount REAL NOT NULL,
+                buy_price REAL NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS violet_market_channels (
+                guild_id INTEGER PRIMARY KEY,
+                channel_id INTEGER NOT NULL,
+                message_id INTEGER
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS violet_investment_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                investment_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                amount REAL NOT NULL,
+                buy_price REAL NOT NULL,
+                sell_price REAL NOT NULL,
+                value REAL NOT NULL,
+                profit REAL NOT NULL,
+                return_percent REAL NOT NULL,
+                created_at TEXT NOT NULL,
+                closed_at TEXT NOT NULL
+            )
+        """)
+
+        await db.execute("""
+            INSERT OR IGNORE INTO violet_market
+            (id, price, previous_price, highest_price, lowest_price,
+             total_invested, last_update)
+            VALUES
+            (1, 100.0, 100.0, 100.0, 100.0, 0, datetime('now'))
+        """)
+
+        await db.commit()
+
+async def save_violet_market_channel(
+    guild_id,
+    channel_id,
+    message_id
+):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("""
+            INSERT OR REPLACE INTO violet_market_channels
+            (guild_id, channel_id, message_id)
+            VALUES (?, ?, ?)
+        """, (
+            guild_id,
+            channel_id,
+            message_id
+        ))
+
+        await db.commit()
+
+async def get_violet_market_channel(guild_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute("""
+            SELECT channel_id, message_id
+            FROM violet_market_channels
+            WHERE guild_id = ?
+        """, (guild_id,))
+
+        return await cursor.fetchone()
+
+async def get_violet_market():
+    async with aiosqlite.connect(DB_NAME) as db:
+
+        cursor = await db.execute("""
+            SELECT price, previous_price, highest_price,
+                   lowest_price, total_invested, last_update
+            FROM violet_market
+            WHERE id = 1
+        """)
+
+        return await cursor.fetchone()
+
+
+async def update_violet_market(price, change_percent, timestamp):
+    async with aiosqlite.connect(DB_NAME) as db:
+
+        current = await db.execute("""
+            SELECT highest_price, lowest_price
+            FROM violet_market
+            WHERE id = 1
+        """)
+
+        data = await current.fetchone()
+
+        highest = max(price, data[0])
+        lowest = min(price, data[1])
+
+        await db.execute("""
+            UPDATE violet_market
+            SET previous_price = price,
+                price = ?,
+                highest_price = ?,
+                lowest_price = ?,
+                last_update = ?
+            WHERE id = 1
+        """, (price, highest, lowest, timestamp))
+
+        await db.execute("""
+            INSERT INTO violet_market_history
+            (price, change_percent, timestamp)
+            VALUES (?, ?, ?)
+        """, (price, change_percent, timestamp))
+
+        await db.commit()
+
+
+async def get_violet_market_history(limit=20):
+    async with aiosqlite.connect(DB_NAME) as db:
+
+        cursor = await db.execute("""
+            SELECT price, change_percent, timestamp
+            FROM violet_market_history
+            ORDER BY id DESC
+            LIMIT ?
+        """, (limit,))
+
+        return await cursor.fetchall()
+
+
+async def create_violet_investment(
+    user_id,
+    guild_id,
+    amount,
+    buy_price,
+    created_at
+):
+    async with aiosqlite.connect(DB_NAME) as db:
+
+        await db.execute("""
+            INSERT INTO violet_investments
+            (user_id, guild_id, amount, buy_price, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (user_id, guild_id, amount, buy_price, created_at))
+
+        await db.execute("""
+            UPDATE violet_market
+            SET total_invested = total_invested + ?
+            WHERE id = 1
+        """, (amount,))
+
+        await db.commit()
+
+
+async def get_violet_investments(user_id, guild_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+
+        cursor = await db.execute("""
+            SELECT id, amount, buy_price, created_at
+            FROM violet_investments
+            WHERE user_id = ?
+              AND guild_id = ?
+            ORDER BY id DESC
+        """, (user_id, guild_id))
+
+        return await cursor.fetchall()
+
+
+async def get_violet_investment(
+    investment_id,
+    user_id,
+    guild_id
+):
+    async with aiosqlite.connect(DB_NAME) as db:
+
+        cursor = await db.execute("""
+            SELECT id, amount, buy_price, created_at
+            FROM violet_investments
+            WHERE id = ?
+              AND user_id = ?
+              AND guild_id = ?
+        """, (investment_id, user_id, guild_id))
+
+        return await cursor.fetchone()
+
+
+async def record_violet_investment_history(
+    investment_id,
+    user_id,
+    guild_id,
+    amount,
+    buy_price,
+    sell_price,
+    value,
+    profit,
+    return_percent,
+    created_at,
+    closed_at
+):
+    async with aiosqlite.connect(DB_NAME) as db:
+
+        await db.execute("""
+            INSERT INTO violet_investment_history
+            (
+                investment_id,
+                user_id,
+                guild_id,
+                amount,
+                buy_price,
+                sell_price,
+                value,
+                profit,
+                return_percent,
+                created_at,
+                closed_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            investment_id,
+            user_id,
+            guild_id,
+            amount,
+            buy_price,
+            sell_price,
+            value,
+            profit,
+            return_percent,
+            created_at,
+            closed_at
+        ))
+
+        await db.commit()
+
+
+async def get_violet_investment_history(
+    user_id,
+    guild_id,
+    limit=25
+):
+    async with aiosqlite.connect(DB_NAME) as db:
+
+        cursor = await db.execute("""
+            SELECT
+                id,
+                investment_id,
+                amount,
+                buy_price,
+                sell_price,
+                value,
+                profit,
+                return_percent,
+                created_at,
+                closed_at
+            FROM violet_investment_history
+            WHERE user_id = ?
+              AND guild_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+        """, (
+            user_id,
+            guild_id,
+            limit
+        ))
+
+        return await cursor.fetchall()
+
+
+async def delete_violet_investment(
+    investment_id,
+    user_id,
+    guild_id,
+    amount
+):
+    async with aiosqlite.connect(DB_NAME) as db:
+
+        await db.execute("""
+            DELETE FROM violet_investments
+            WHERE id = ?
+              AND user_id = ?
+              AND guild_id = ?
+        """, (investment_id, user_id, guild_id))
+
+        await db.execute("""
+            UPDATE violet_market
+            SET total_invested =
+                MAX(0, total_invested - ?)
+            WHERE id = 1
+        """, (amount,))
+
+        await db.commit()
+# =========================================================
 # 🎰 ESTADÍSTICAS DEL CASINO
 # =========================================================
 
@@ -1265,3 +1729,23 @@ async def get_casino_stats(guild_id, user_id):
 
         return resultado
 
+
+# =========================================================
+# VIOLET MARKET — INVERSIONES ACTIVAS GLOBALES
+# =========================================================
+
+async def get_all_violet_investments():
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute("""
+            SELECT
+                id,
+                user_id,
+                guild_id,
+                amount,
+                buy_price,
+                created_at
+            FROM violet_investments
+            ORDER BY id DESC
+        """)
+
+        return await cursor.fetchall()

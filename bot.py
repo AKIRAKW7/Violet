@@ -1,3 +1,4 @@
+from rangos import instalar as instalar_rangos
 import os
 import random
 import hashlib
@@ -28,6 +29,14 @@ bot = commands.Bot(
 arbol = bot.tree
 GUILD_ID = 1544748291537899551
 GUILD = discord.Object(id=GUILD_ID)
+
+# =========================================================
+# 🛡️ VIOLET SECURITY — ESTADO ANTI-SPAM
+# =========================================================
+
+violet_spam_tracker = {}
+violet_spam_warned = set()
+
 
 
 GIF_API = {
@@ -87,25 +96,38 @@ async def responder(
     interaction,
     contenido=None,
     embed=None,
-    ephemeral=False
+    ephemeral=False,
+    view=None,
+    embeds=None,
+    file=None,
+    files=None
 ):
     try:
+        kwargs = {
+            "content": contenido,
+            "ephemeral": ephemeral
+        }
+
+        if view is not None:
+            kwargs["view"] = view
+
+        if embeds is not None:
+            kwargs["embeds"] = embeds
+        elif embed is not None:
+            kwargs["embed"] = embed
+
+        if files is not None:
+            kwargs["files"] = files
+        elif file is not None:
+            kwargs["file"] = file
+
         if interaction.response.is_done():
-            await interaction.followup.send(
-                content=contenido,
-                embed=embed,
-                ephemeral=ephemeral
-            )
+            await interaction.followup.send(**kwargs)
         else:
-            await interaction.response.send_message(
-                content=contenido,
-                embed=embed,
-                ephemeral=ephemeral
-            )
+            await interaction.response.send_message(**kwargs)
 
     except Exception as error:
         print(f"Error enviando respuesta: {error}")
-
 
 
 # =========================================================
@@ -130,12 +152,359 @@ async def violet_iniciar_actividad_automatica():
 
     print("💜 Actividades autónomas de Violet activadas.")
 
+# =========================================================
+# VIOLET MARKET — MOTOR AUTOMÁTICO
+# =========================================================
+
+VIOLET_MARKET_INTERVALO = 5 * 60
+VIOLET_MARKET_MIN = 10.0
+VIOLET_MARKET_MAX = 1000000.0
+
+
+async def violet_market_loop():
+
+    await asyncio.sleep(15)
+
+    while True:
+
+        try:
+            mercado = await database.get_violet_market()
+
+            if mercado is None:
+                await database.init_violet_market()
+                mercado = await database.get_violet_market()
+
+            precio_actual = float(mercado[0])
+
+            # Variación aleatoria entre -5% y +5%
+            variacion = random.uniform(-0.05, 0.05)
+
+            nuevo_precio = precio_actual * (1 + variacion)
+
+            # Evitar que la moneda llegue a 0 o crezca indefinidamente
+            nuevo_precio = max(
+                VIOLET_MARKET_MIN,
+                min(VIOLET_MARKET_MAX, nuevo_precio)
+            )
+
+            cambio_real = (
+                (nuevo_precio - precio_actual)
+                / precio_actual
+            ) * 100
+
+            from datetime import datetime, UTC
+
+            timestamp = datetime.now(UTC).isoformat()
+
+            await database.update_violet_market(
+                nuevo_precio,
+                cambio_real,
+                timestamp
+            )
+
+            print(
+                f"📈 VLC | "
+                f"${precio_actual:,.2f} → "
+                f"${nuevo_precio:,.2f} "
+                f"({cambio_real:+.2f}%)"
+            )
+
+            # Actualizar automáticamente el canal Violet Market
+            for guild in bot.guilds:
+                await violet_market_publish(guild)
+
+        except Exception as error:
+            print(f"❌ Error en Violet Market: {error}")
+
+        await asyncio.sleep(VIOLET_MARKET_INTERVALO)
+
+
+# =========================================================
+# 📊 VIOLET MARKET — RESUMEN DE INVERSIONES
+# =========================================================
+
+async def violet_market_investment_summary(precio_actual):
+    try:
+        inversiones = await database.get_all_violet_investments()
+
+        if not inversiones:
+            return (
+                "💼 **Inversiones activas:** `0`\n"
+                "No hay inversiones activas en este momento."
+            )
+
+        total_capital = 0.0
+        total_valor = 0.0
+        ganancia_total = 0.0
+
+        for inversion in inversiones:
+            amount = float(inversion[3])
+            buy_price = float(inversion[4])
+
+            if buy_price <= 0:
+                continue
+
+            valor_actual = (
+                amount * float(precio_actual) / buy_price
+            )
+
+            total_capital += amount
+            total_valor += valor_actual
+            ganancia_total += valor_actual - amount
+
+        if total_capital > 0:
+            rendimiento = (
+                ganancia_total / total_capital
+            ) * 100
+        else:
+            rendimiento = 0.0
+
+        if ganancia_total > 0:
+            estado = "📈"
+            resultado = f"+{ganancia_total:,.2f} 🪙"
+        elif ganancia_total < 0:
+            estado = "📉"
+            resultado = f"{ganancia_total:,.2f} 🪙"
+        else:
+            estado = "➖"
+            resultado = "0.00 🪙"
+
+        return (
+            f"💼 **Inversiones activas:** `{len(inversiones)}`\n"
+            f"💰 **Capital invertido:** `{total_capital:,.2f} 🪙`\n"
+            f"📊 **Valor actual:** `{total_valor:,.2f} 🪙`\n"
+            f"{estado} **Resultado:** `{resultado}`\n"
+            f"📈 **Rendimiento:** `{rendimiento:+.2f}%`"
+        )
+
+    except Exception as error:
+        print(f"❌ Error calculando inversiones: {error}")
+        return "⚠️ No se pudo calcular el resumen de inversiones."
+
+# =========================================================
+# 📈 VIOLET MARKET — CANAL AUTOMÁTICO
+# =========================================================
+
+VIOLET_MARKET_CHANNEL_NAME = "📈・violet-market"
+
+async def violet_market_channel(guild):
+
+    try:
+        canal = discord.utils.get(
+            guild.text_channels,
+            name=VIOLET_MARKET_CHANNEL_NAME
+        )
+
+        if canal is None:
+
+            permisos = guild.me.guild_permissions
+
+            print("===== PERMISOS VIOLET =====")
+            print(f"Servidor: {guild.name}")
+            print(f"Gestionar canales: {permisos.manage_channels}")
+            print(f"Administrador: {permisos.administrator}")
+            print(f"Ver canales: {permisos.view_channel}")
+            print(f"Enviar mensajes: {permisos.send_messages}")
+            print("============================")
+
+            canal = await guild.create_text_channel(
+                VIOLET_MARKET_CHANNEL_NAME,
+                topic="📈 Mercado automático de Violet Coin (VLC)"
+            )
+
+            print(
+                f"📈 Canal Violet Market creado en {guild.name}"
+            )
+
+        return canal
+
+    except Exception as error:
+        print(
+            f"❌ Error creando canal Violet Market: {error}"
+        )
+        return None
+
+
+
+
+async def violet_market_publish(guild):
+
+    canal = await violet_market_channel(guild)
+
+    if canal is None:
+        return
+
+    datos = await database.get_violet_market()
+
+    if datos is None:
+        return
+
+    (
+        precio,
+        precio_anterior,
+        maximo,
+        minimo,
+        total_invertido,
+        ultima_actualizacion
+    ) = datos
+
+    precio = float(precio)
+    precio_anterior = float(precio_anterior)
+
+    if precio_anterior > 0:
+        cambio = (
+            (precio - precio_anterior)
+            / precio_anterior
+        ) * 100
+    else:
+        cambio = 0
+
+    if cambio > 0:
+        tendencia = "📈"
+    elif cambio < 0:
+        tendencia = "📉"
+    else:
+        tendencia = "➖"
+
+    embed = discord.Embed(
+        title="💜 Violet Market",
+        description=(
+            "Mercado automático de **Violet Coin (VLC)**\n\n"
+            f"{tendencia} **Precio actual:** "
+            f"`{precio:,.2f} VLC`\n"
+            f"📊 **Variación:** `{cambio:+.2f}%`"
+        ),
+        color=discord.Color.purple()
+    )
+
+    embed.add_field(
+        name="📈 Máximo histórico",
+        value=f"`{float(maximo):,.2f} VLC`",
+        inline=True
+    )
+
+    embed.add_field(
+        name="📉 Mínimo histórico",
+        value=f"`{float(minimo):,.2f} VLC`",
+        inline=True
+    )
+
+    embed.add_field(
+        name="💰 Total invertido",
+        value=f"`{float(total_invertido):,.2f} 🪙`",
+        inline=False
+    )
+
+    resumen_inversiones = await violet_market_investment_summary(
+        precio
+    )
+
+    embed.add_field(
+        name="📊 Movimiento de inversiones",
+        value=resumen_inversiones,
+        inline=False
+    )
+
+    embed.add_field(
+        name="💡 Invertir",
+        value="Usa `/invertir <cantidad>` para invertir.",
+        inline=False
+    )
+
+    embed.set_footer(
+        text="Violet Market • Actualización automática"
+    )
+
+    registro = await database.get_violet_market_channel(
+        guild.id
+    )
+
+    mensaje = None
+
+    if registro:
+        channel_id, message_id = registro
+
+        if channel_id == canal.id and message_id:
+            try:
+                mensaje = await canal.fetch_message(
+                    message_id
+                )
+            except discord.NotFound:
+                mensaje = None
+            except discord.Forbidden:
+                print(
+                    f"❌ Sin permisos para acceder al mensaje "
+                    f"de Violet Market en {guild.name}"
+                )
+                return
+
+    try:
+        if mensaje:
+            await mensaje.edit(
+                embed=embed,
+                view=VioletMarketView()
+            )
+
+        else:
+            mensaje = await canal.send(
+                embed=embed,
+                view=VioletMarketView()
+            )
+
+            await database.save_violet_market_channel(
+                guild.id,
+                canal.id,
+                mensaje.id
+            )
+
+    except discord.Forbidden:
+        print(
+            f"❌ Sin permisos para publicar Violet Market "
+            f"en {guild.name}"
+        )
+
+    except Exception as error:
+        print(
+            f"❌ Error actualizando Violet Market: {error}"
+        )
+
 
 @bot.event
 async def on_ready():
+    if not getattr(bot, '_rangos_cargados', False):
+        bot._rangos_cargados = True
+        await instalar_rangos(bot, arbol, database)
 
     await database.init_db()
+    await database.init_violet_market()
+    if not hasattr(bot, "_violet_market_view_loaded"):
+        bot.add_view(VioletMarketView())
+        bot._violet_market_view_loaded = True
+        print("📈 Violet Market View cargada.")
 
+    if not hasattr(bot, "_violet_market_task"):
+        bot._violet_market_task = asyncio.create_task(
+            violet_market_loop()
+        )
+        print("📈 Violet Market automático activado.")
+
+    # Crear canal Violet Market automáticamente en cada servidor
+    if not hasattr(bot, "_violet_market_channels_loaded"):
+        for guild in bot.guilds:
+            try:
+                canal = await violet_market_channel(guild)
+
+                if canal:
+                    await violet_market_publish(guild)
+
+            except Exception as error:
+                print(
+                    f"❌ Error preparando Violet Market en "
+                    f"{guild.name}: {error}"
+                )
+
+        bot._violet_market_channels_loaded = True
+        print("📈 Canales Violet Market preparados.")
     try:
         await violet_iniciar_actividad_automatica()
     except Exception as error:
@@ -164,11 +533,76 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
+    # VIOLET PESCA AUTOMATICA V2 - registrar actividad
+    try:
+        if (
+            message.guild is not None
+            and not message.author.bot
+            and message.channel.name == VIOLET_PESCA_CANAL_NOMBRE
+        ):
+            violet_pesca_marcar_usuario(
+                message.guild.id,
+                message.author.id
+            )
+    except Exception as error:
+        print(f"⚠️ Error registrando actividad de pesca: {error}")
+
 
     if message.author.bot:
         return
 
     if message.guild:
+
+        # 🛡️ ANTI-SPAM
+        try:
+            ahora = asyncio.get_running_loop().time()
+            clave = (message.guild.id, message.author.id)
+
+            historial = violet_spam_tracker.setdefault(clave, [])
+            historial.append(ahora)
+
+            historial[:] = [
+                tiempo for tiempo in historial
+                if ahora - tiempo <= 5
+            ]
+
+            if len(historial) >= 6:
+
+                if clave not in violet_spam_warned:
+                    violet_spam_warned.add(clave)
+
+                    try:
+                        await message.delete()
+                    except Exception:
+                        pass
+
+                    await database.add_security_log(
+                        message.guild.id,
+                        message.author.id,
+                        "ANTI-SPAM",
+                        "6 mensajes en 5 segundos"
+                    )
+
+                    await message.channel.send(
+                        f"🛡️ {message.author.mention} "
+                        "detuve el spam. Reduce la velocidad de tus mensajes.",
+                        delete_after=5
+                    )
+
+                    return
+
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
+
+                return
+
+            if len(historial) < 3:
+                violet_spam_warned.discard(clave)
+
+        except Exception as error:
+            print(f"❌ Error Anti-Spam: {error}")
 
         try:
             nuevo_xp, nuevo_nivel, viejo_nivel = (
@@ -194,6 +628,12 @@ async def on_message(message):
 
 @bot.event
 async def on_guild_join(guild):
+    # VIOLET PESCA AUTOMATICA V2 - crear canal al entrar
+    try:
+        await violet_obtener_canal_pesca(guild)
+    except Exception as error:
+        print(f"⚠️ Error creando canal de pesca al entrar: {error}")
+
 
     print(f"💜 Violet entró al servidor: {guild.name}")
 
@@ -738,7 +1178,7 @@ async def rank(interaction: discord.Interaction):
 
 @arbol.command(
     name="saldo",
-    description="Muestra tu saldo"
+    description="Muestra tu saldo y dinero guardado en el banco"
 )
 async def saldo(interaction: discord.Interaction):
 
@@ -747,9 +1187,41 @@ async def saldo(interaction: discord.Interaction):
         interaction.guild.id
     )
 
+    saldo_disponible = user[2]
+
+    saldo_banco = await database.get_bank_balance(
+        interaction.user.id,
+        interaction.guild.id
+    )
+
+    total = saldo_disponible + saldo_banco
+
+    embed = discord.Embed(
+        title="💰 Saldo de Violet",
+        color=discord.Color.purple()
+    )
+
+    embed.add_field(
+        name="💵 Disponible",
+        value=f"**{saldo_disponible:,}** monedas",
+        inline=True
+    )
+
+    embed.add_field(
+        name="🏦 Banco",
+        value=f"**{saldo_banco:,}** monedas",
+        inline=True
+    )
+
+    embed.add_field(
+        name="💎 Total",
+        value=f"**{total:,}** monedas",
+        inline=False
+    )
+
     await responder(
         interaction,
-        f"💰 Tienes **{user[2]}** monedas."
+        embed=embed
     )
 
 
@@ -896,29 +1368,156 @@ async def inventario(interaction: discord.Interaction):
     )
 
 
+# =========================================================
+# TIENDA DE MINERÍA Y PESCA
+# =========================================================
+
+TIENDA_MINERIA_PESCA = {
+    1: [
+        ('⛏️', 'Pico de Hierro', '10% más de probabilidad de recursos raros', 2500),
+        ('⛏️', 'Pico de Oro', '20% más de probabilidad de recursos raros', 10000),
+        ('⛏️', 'Pico de Diamante', '35% más de probabilidad de recursos raros', 50000),
+        ('🎣', 'Caña Reforzada', '10% más de probabilidad de peces raros', 2500),
+        ('🎣', 'Caña de Oro', '20% más de probabilidad de peces raros', 10000),
+        ('🎣', 'Caña de Diamante', '35% más de probabilidad de peces raros', 50000),
+        ('🪣', 'Cubeta de Pesca', '+5% recompensa de pesca', 5000),
+        ('🧤', 'Guantes Mineros', '+5% recompensa de minería', 5000),
+    ],
+    2: [
+        ('💎', 'Detector de Minerales', 'Aumenta la aparición de minerales raros', 75000),
+        ('🔥', 'Taladro Minero', 'Aumenta considerablemente los minerales valiosos', 150000),
+        ('💜', 'Núcleo Violeta', 'Potencia minerales legendarios y míticos', 350000),
+        ('🐟', 'Radar de Peces', 'Aumenta la aparición de peces raros', 75000),
+        ('🌊', 'Señuelo Abisal', 'Aumenta peces valiosos', 150000),
+        ('💜', 'Señuelo Violeta', 'Potencia peces legendarios y míticos', 350000),
+        ('🍀', 'Amuleto de Suerte', 'Aumenta la suerte general', 50000),
+        ('✨', 'Amuleto Épico', 'Aumenta la probabilidad de recompensas épicas', 125000),
+        ('🔮', 'Amuleto Legendario', 'Aumenta la probabilidad de recompensas legendarias', 300000),
+        ('🌌', 'Amuleto Mítico', 'Aumenta la probabilidad de recompensas míticas', 750000),
+    ],
+    3: [
+        ('🍀', 'Suerte Minera', 'Mejora permanentemente la suerte durante minería', 100000),
+        ('🎯', 'Suerte Pesquera', 'Mejora permanentemente la suerte durante pesca', 100000),
+        ('⚡', 'Minería Rápida', 'Reduce el tiempo entre actividades mineras', 150000),
+        ('🌊', 'Pesca Rápida', 'Reduce el tiempo entre actividades pesqueras', 150000),
+        ('💎', 'Fortuna Legendaria', 'Aumenta objetos legendarios', 300000),
+        ('💜', 'Bendición de Violet', 'Aumenta objetos míticos', 750000),
+        ('⭐', 'Multiplicador XP', 'Aumenta la XP obtenida', 500000),
+        ('💰', 'Fortuna Dorada', 'Aumenta las monedas obtenidas', 600000),
+        ('👑', 'Favor Real', 'Gran aumento de recompensas raras', 1000000),
+        ('🌌', 'Favor Cósmico', 'Máxima mejora de suerte', 2500000),
+    ],
+    4: [
+        ('🧪', 'Poción de XP', 'Otorga una bonificación temporal de XP', 15000),
+        ('🍀', 'Poción de Suerte', 'Aumenta temporalmente la suerte', 20000),
+        ('💰', 'Poción de Fortuna', 'Aumenta temporalmente las monedas', 25000),
+        ('⚡', 'Poción de Velocidad', 'Reduce temporalmente el cooldown', 30000),
+        ('🎣', 'Carnada Premium', 'Mejora una expedición de pesca', 10000),
+        ('💎', 'Dinamita Minera', 'Mejora una expedición minera', 12000),
+        ('🧭', 'Brújula Misteriosa', 'Aumenta la posibilidad de hallar objetos raros', 40000),
+        ('🔑', 'Llave Abisal', 'Aumenta las recompensas de rareza alta', 75000),
+        ('🎁', 'Caja de Pesca', 'Entrega una recompensa aleatoria', 25000),
+        ('📦', 'Caja Minera', 'Entrega una recompensa aleatoria', 25000),
+    ],
+    5: [
+        ('🎒', 'Mochila Grande', 'Aumenta la capacidad del inventario', 100000),
+        ('🧰', 'Kit Minero', 'Mejora permanentemente la minería', 175000),
+        ('🎣', 'Kit Pesquero', 'Mejora permanentemente la pesca', 175000),
+        ('💎', 'Detector Supremo', 'Gran aumento de minerales raros', 500000),
+        ('🐋', 'Radar Oceánico', 'Gran aumento de peces raros', 500000),
+        ('💜', 'Reliquia de Violet', 'Aumenta recompensas míticas', 1500000),
+        ('🌌', 'Artefacto Cósmico', 'Bonificación máxima de exploración', 5000000),
+        ('👑', 'Corona del Explorador', 'Bonificación global de minería y pesca', 10000000),
+    ],
+}
+
+
+def obtener_pagina_tienda_mineria_pesca(pagina: int):
+
+    pagina = max(1, min(5, pagina))
+
+    return TIENDA_MINERIA_PESCA[pagina]
+
+
+def crear_embed_tienda_mineria_pesca(pagina: int):
+
+    objetos = obtener_pagina_tienda_mineria_pesca(pagina)
+
+    titulos = {
+        1: "⛏️🎣 Equipamiento",
+        2: "💎 Equipamiento avanzado",
+        3: "💜 Mejoras especiales",
+        4: "🧪 Consumibles",
+        5: "👑 Reliquias y objetos premium"
+    }
+
+    texto = ""
+
+    for emoji, nombre, efecto, precio in objetos:
+        texto += (
+            f"{emoji} **{nombre}**\n"
+            f"   └ {efecto}\n"
+            f"   💰 `{precio:,}` monedas\n\n"
+        )
+
+    texto += (
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"📖 Página **{pagina}/5**\n"
+        "Usa `/comprar objeto cantidad` para adquirir una mejora."
+    )
+
+    return discord.Embed(
+        title=f"🛒 Tienda de Violet • {titulos[pagina]}",
+        description=texto,
+        color=discord.Color.purple()
+    )
+
+
 @arbol.command(
-    name="tienda",
-    description="Muestra la tienda"
+    name="banco",
+    description="Consulta tu dinero disponible y tu dinero guardado en el banco"
 )
-async def tienda(interaction: discord.Interaction):
+async def banco(interaction: discord.Interaction):
+
+    datos = await database.get_user(
+        interaction.user.id,
+        interaction.guild.id
+    )
+
+    saldo = datos[2]
+
+    banco_saldo = await database.get_bank_balance(
+        interaction.user.id,
+        interaction.guild.id
+    )
+
+    total = saldo + banco_saldo
 
     embed = discord.Embed(
-        title="🛒 Tienda de Violet",
-        description=(
-            "🍎 `comida` — 100 monedas\n"
-            "🎁 `regalo` — 250 monedas\n"
-            "💎 `gema` — 500 monedas\n"
-            "🍀 `suerte` — 1.000 monedas\n"
-            "🧪 `pocion_xp` — 2.500 monedas\n"
-            "🎁 `caja_misteriosa` — 5.000 monedas\n"
-            "💎 `gema_rara` — 10.000 monedas\n"
-            "👑 `corona` — 25.000 monedas\n"
-            "✨ `cristal` — 50.000 monedas\n"
-            "🔮 `orbe` — 75.000 monedas\n"
-            "🏆 `trofeo` — 100.000 monedas\n\n"
-            "Usa `/comprar objeto cantidad` para comprar."
-        ),
+        title="🏦 Banco de Violet",
         color=discord.Color.purple()
+    )
+
+    embed.add_field(
+        name="💰 Dinero disponible",
+        value=f"**{saldo:,}** monedas",
+        inline=True
+    )
+
+    embed.add_field(
+        name="🏦 Dinero guardado",
+        value=f"**{banco_saldo:,}** monedas",
+        inline=True
+    )
+
+    embed.add_field(
+        name="💎 Patrimonio total",
+        value=f"**{total:,}** monedas",
+        inline=False
+    )
+
+    embed.set_footer(
+        text="Violet Bank • Tu dinero, bajo control"
     )
 
     await responder(
@@ -928,8 +1527,101 @@ async def tienda(interaction: discord.Interaction):
 
 
 @arbol.command(
+    name="depositar",
+    description="Guarda dinero en el banco"
+)
+@app_commands.describe(
+    cantidad="Cantidad de monedas que quieres guardar"
+)
+async def depositar(
+    interaction: discord.Interaction,
+    cantidad: app_commands.Range[int, 1, 1000000000]
+):
+
+    correcto = await database.deposit_bank(
+        interaction.user.id,
+        interaction.guild.id,
+        cantidad
+    )
+
+    if not correcto:
+
+        await responder(
+            interaction,
+            f"❌ No tienes suficientes monedas disponibles para depositar **{cantidad:,}**.",
+            ephemeral=True
+        )
+        return
+
+    banco_saldo = await database.get_bank_balance(
+        interaction.user.id,
+        interaction.guild.id
+    )
+
+    await responder(
+        interaction,
+        f"🏦 Depositaste **{cantidad:,}** monedas.\n"
+        f"💰 Saldo bancario: **{banco_saldo:,}** monedas."
+    )
+
+
+@arbol.command(
+    name="retirar",
+    description="Retira dinero guardado en el banco"
+)
+@app_commands.describe(
+    cantidad="Cantidad de monedas que quieres retirar"
+)
+async def retirar(
+    interaction: discord.Interaction,
+    cantidad: app_commands.Range[int, 1, 1000000000]
+):
+
+    correcto = await database.withdraw_bank(
+        interaction.user.id,
+        interaction.guild.id,
+        cantidad
+    )
+
+    if not correcto:
+
+        await responder(
+            interaction,
+            f"❌ No tienes suficientes monedas en el banco para retirar **{cantidad:,}**.",
+            ephemeral=True
+        )
+        return
+
+    banco_saldo = await database.get_bank_balance(
+        interaction.user.id,
+        interaction.guild.id
+    )
+
+    await responder(
+        interaction,
+        f"🏦 Retiraste **{cantidad:,}** monedas.\n"
+        f"🏦 Saldo bancario restante: **{banco_saldo:,}** monedas."
+    )
+
+
+@arbol.command(
+    name="tienda",
+    description="Muestra la tienda"
+)
+async def tienda(interaction: discord.Interaction):
+
+    embed = crear_embed_tienda_mineria_pesca(1)
+
+    await responder(
+        interaction,
+        embed=embed,
+        view=TiendaMineriaPescaView(1)
+    )
+
+
+@arbol.command(
     name="comprar",
-    description="Compra un objeto"
+    description="Compra un objeto o mejora de la tienda"
 )
 @app_commands.describe(
     objeto="Objeto que quieres comprar",
@@ -955,30 +1647,42 @@ async def comprar(
         "trofeo": 100000
     }
 
-    objeto = objeto.lower()
+    # Todos los objetos nuevos de minería y pesca
+    for pagina in TIENDA_MINERIA_PESCA.values():
+        for emoji, nombre, efecto, precio in pagina:
+            precios[nombre.lower()] = precio
+
+    objeto = objeto.lower().strip()
+
+    for pagina in TIENDA_MINERIA_PESCA.values():
+        for emoji, nombre, efecto, precio in pagina:
+            if objeto == nombre.lower():
+                precios[objeto] = precio
+                break
 
     if objeto not in precios:
 
         await responder(
             interaction,
-            "❌ Ese objeto no existe.",
+            "❌ Ese objeto no existe en la tienda.",
             ephemeral=True
         )
         return
 
-    precio = precios[objeto] * cantidad
+    precio_total = precios[objeto] * cantidad
 
     correcto = await database.remove_balance(
         interaction.user.id,
         interaction.guild.id,
-        precio
+        precio_total
     )
 
     if not correcto:
 
         await responder(
             interaction,
-            "❌ No tienes suficientes monedas.",
+            f"❌ No tienes suficientes monedas.\n"
+            f"💰 Necesitas **{precio_total:,}** monedas.",
             ephemeral=True
         )
         return
@@ -992,8 +1696,8 @@ async def comprar(
 
     await responder(
         interaction,
-        f"🛒 Compraste **{cantidad}x {objeto}** "
-        f"por **{precio}** monedas."
+        f"🛒 Compraste **{cantidad}x {objeto}**\n"
+        f"💰 Precio: **{precio_total:,}** monedas."
     )
 
 
@@ -1332,14 +2036,106 @@ async def ranking_social(interaction: discord.Interaction):
 # =========================================================
 
 MINERALES = [
-    ("🪨", "Piedra", "Común", 10, 5, 45),
-    ("🪵", "Carbón", "Común", 20, 8, 25),
-    ("🔩", "Hierro", "Poco común", 40, 12, 15),
-    ("🥉", "Cobre", "Poco común", 60, 15, 8),
-    ("🥈", "Plata", "Raro", 120, 20, 4),
-    ("🥇", "Oro", "Épico", 250, 30, 2),
-    ("💎", "Diamante", "Legendario", 500, 50, 0.8),
-    ("💜", "Cristal Violeta", "Mítico", 850, 75, 0.2)
+('🪨', 'Piedra', 'Común', 10, 5, 28),
+('🪵', 'Carbón', 'Común', 20, 8, 18),
+('🟫', 'Arcilla', 'Común', 25, 9, 12),
+('🔩', 'Hierro', 'Común', 35, 11, 10),
+('🥉', 'Cobre', 'Común', 45, 12, 8),
+('🧱', 'Obsidiana', 'Poco común', 80, 18, 6),
+('⚙️', 'Estaño', 'Poco común', 55, 14, 6),
+('⚙️', 'Zinc', 'Poco común', 65, 15, 5),
+('🩶', 'Níquel', 'Poco común', 75, 17, 5),
+('🔘', 'Plomo', 'Poco común', 70, 16, 4),
+('🥈', 'Plata', 'Raro', 120, 20, 3.5),
+('🟢', 'Esmeralda', 'Raro', 180, 24, 2.8),
+('🔴', 'Rubí', 'Raro', 220, 27, 2.5),
+('🔵', 'Zafiro', 'Raro', 230, 28, 2.3),
+('🟠', 'Ámbar', 'Raro', 200, 26, 2.2),
+('🟣', 'Amatista', 'Raro', 210, 27, 2),
+('💛', 'Topacio', 'Raro', 240, 29, 1.8),
+('💚', 'Peridoto', 'Raro', 260, 30, 1.7),
+('💠', 'Aguamarina', 'Raro', 280, 31, 1.5),
+('🟡', 'Citrino', 'Raro', 250, 30, 1.5),
+('🥇', 'Oro', 'Épico', 350, 35, 1.3),
+('💎', 'Diamante', 'Épico', 500, 50, 1.0),
+('🖤', 'Ónix', 'Épico', 450, 45, 0.9),
+('🤍', 'Cuarzo Blanco', 'Épico', 380, 38, 0.9),
+('💜', 'Cuarzo Violeta', 'Épico', 600, 55, 0.8),
+('🌋', 'Basalto Antiguo', 'Épico', 420, 42, 0.8),
+('🌑', 'Piedra Lunar', 'Épico', 700, 60, 0.7),
+('☀️', 'Piedra Solar', 'Épico', 750, 65, 0.65),
+('🌊', 'Cristal Marino', 'Épico', 650, 58, 0.6),
+('❄️', 'Cristal Glacial', 'Épico', 720, 62, 0.6),
+('🔥', 'Cristal Ígneo', 'Épico', 800, 68, 0.55),
+('⚡', 'Cristal Eléctrico', 'Épico', 850, 70, 0.5),
+('🌿', 'Cristal Natural', 'Épico', 620, 56, 0.55),
+('🌌', 'Cristal Estelar', 'Legendario', 1000, 75, 0.45),
+('🌠', 'Fragmento Estelar', 'Legendario', 1200, 82, 0.4),
+('🌙', 'Mineral Lunar', 'Legendario', 1300, 85, 0.38),
+('☀️', 'Mineral Solar', 'Legendario', 1400, 90, 0.35),
+('🌌', 'Mineral Cósmico', 'Legendario', 1600, 95, 0.3),
+('🌀', 'Mineral Dimensional', 'Legendario', 1800, 105, 0.28),
+('👁️', 'Mineral del Vacío', 'Legendario', 1900, 110, 0.25),
+('🌑', 'Fragmento Abisal', 'Legendario', 2100, 115, 0.23),
+('💀', 'Mineral Maldito', 'Legendario', 2200, 120, 0.2),
+('👑', 'Mineral Real', 'Legendario', 2500, 125, 0.18),
+('💜', 'Cristal Violeta', 'Mítico', 3000, 150, 0.12),
+('🔮', 'Cristal Arcano', 'Mítico', 3500, 165, 0.11),
+('🌌', 'Núcleo Cósmico', 'Mítico', 4500, 190, 0.09),
+('🌀', 'Núcleo Dimensional', 'Mítico', 5000, 210, 0.08),
+('🌑', 'Núcleo del Vacío', 'Mítico', 6000, 230, 0.07),
+('✨', 'Esencia Estelar', 'Mítico', 6500, 240, 0.06),
+('💠', 'Corazón de Cristal', 'Mítico', 7000, 250, 0.055),
+('👑', 'Fragmento Celestial', 'Mítico', 7500, 260, 0.05),
+('🌈', 'Cristal Prisma', 'Mítico', 8000, 275, 0.045),
+('💜', 'Corazón de Violet', 'Mítico', 10000, 300, 0.035),
+('🪨', 'Granito', 'Común', 84, 14, 5.0),
+('🪨', 'Mármol', 'Común', 85, 14, 5.0),
+('🪨', 'Pizarra', 'Común', 86, 15, 5.0),
+('🪨', 'Caliza', 'Común', 87, 15, 5.0),
+('🪨', 'Arenisca', 'Común', 88, 15, 5.0),
+('🪨', 'Cuarzo', 'Común', 89, 15, 5.0),
+('⚙️', 'Cobalto', 'Poco común', 200, 27, 3.0),
+('⚙️', 'Titanio', 'Poco común', 202, 27, 3.0),
+('⚙️', 'Cromo', 'Poco común', 204, 27, 3.0),
+('⚙️', 'Manganeso', 'Poco común', 206, 27, 3.0),
+('⚙️', 'Molibdeno', 'Poco común', 208, 27, 3.0),
+('⚙️', 'Litio', 'Poco común', 210, 28, 3.0),
+('🟢', 'Jade', 'Raro', 448, 46, 1.5),
+('🔴', 'Granate', 'Raro', 451, 46, 1.5),
+('🔵', 'Lapislázuli', 'Raro', 454, 47, 1.5),
+('🟣', 'Fluorita', 'Raro', 457, 47, 1.5),
+('💚', 'Malaquita', 'Raro', 460, 47, 1.5),
+('💙', 'Turquesa', 'Raro', 463, 47, 1.5),
+('💛', 'Pirita', 'Raro', 466, 48, 1.5),
+('🧡', 'Cornalina', 'Raro', 469, 48, 1.5),
+('💎', 'Alejandrita', 'Épico', 970, 79, 0.7),
+('💎', 'Opalo', 'Épico', 975, 80, 0.7),
+('💎', 'Tanzanita', 'Épico', 980, 80, 0.7),
+('💎', 'Morganita', 'Épico', 985, 80, 0.7),
+('💎', 'Piedra Dragón', 'Épico', 990, 81, 0.7),
+('🔥', 'Piedra Magmática', 'Épico', 995, 81, 0.7),
+('❄️', 'Hielo Mineral', 'Épico', 1000, 81, 0.7),
+('⚡', 'Mineral del Trueno', 'Épico', 1005, 82, 0.7),
+('🌿', 'Mineral del Bosque', 'Épico', 1010, 82, 0.7),
+('🌊', 'Mineral de Mareas', 'Épico', 1015, 82, 0.7),
+('🌙', 'Fragmento de Luna', 'Legendario', 2172, 184, 0.25),
+('☀️', 'Fragmento Solar', 'Legendario', 2180, 185, 0.25),
+('🌠', 'Metal Estelar', 'Legendario', 2188, 186, 0.25),
+('🌀', 'Aleación Dimensional', 'Legendario', 2196, 187, 0.25),
+('👁️', 'Ojo Mineral', 'Legendario', 2204, 188, 0.25),
+('💀', 'Esencia Oscura', 'Legendario', 2212, 189, 0.25),
+('👑', 'Oro Celestial', 'Legendario', 2220, 190, 0.25),
+('🌌', 'Polvo Cósmico', 'Legendario', 2228, 191, 0.25),
+('💜', 'Cristal Astral', 'Mítico', 5380, 364, 0.08),
+('🔮', 'Cristal del Oráculo', 'Mítico', 5395, 366, 0.08),
+('🌈', 'Prisma Cósmico', 'Mítico', 5410, 368, 0.08),
+('🌀', 'Esencia Dimensional', 'Mítico', 5425, 370, 0.08),
+('🌑', 'Esencia del Vacío', 'Mítico', 5440, 372, 0.08),
+('✨', 'Polvo Celestial', 'Mítico', 5455, 374, 0.08),
+('💜', 'Fragmento Violeta', 'Mítico', 5470, 376, 0.08),
+('👑', 'Corona Mineral', 'Mítico', 5485, 378, 0.08),
+('🌌', 'Singularidad Mineral', 'Mítico', 5500, 380, 0.08)
 ]
 
 
@@ -1522,14 +2318,106 @@ async def minar(interaction: discord.Interaction):
 # =========================================================
 
 PECES = [
-    ("🐟", "Sardina", "Común", 15, 5, 40),
-    ("🐠", "Pez tropical", "Común", 30, 8, 25),
-    ("🐡", "Pez globo", "Poco común", 50, 12, 15),
-    ("🦑", "Calamar", "Poco común", 80, 15, 9),
-    ("🐙", "Pulpo", "Raro", 150, 22, 5),
-    ("🦈", "Tiburón", "Épico", 300, 35, 2),
-    ("🐋", "Ballena", "Legendario", 600, 55, 0.8),
-    ("💜", "Pez Violeta", "Mítico", 1000, 80, 0.2)
+('🐟', 'Sardina', 'Común', 15, 5, 24),
+('🐠', 'Pez tropical', 'Común', 30, 8, 18),
+('🦐', 'Camarón', 'Común', 35, 9, 10),
+('🦀', 'Cangrejo', 'Común', 40, 10, 8),
+('🐡', 'Pez globo', 'Común', 50, 12, 7),
+('🦑', 'Calamar', 'Común', 60, 13, 7),
+('🐚', 'Almeja', 'Común', 70, 14, 6),
+('🦞', 'Langostino', 'Común', 80, 15, 5),
+('🐟', 'Caballa', 'Común', 55, 11, 6),
+('🐟', 'Anchoa', 'Común', 45, 10, 7),
+('🐟', 'Merluza', 'Poco común', 90, 16, 5),
+('🐟', 'Salmón', 'Poco común', 110, 18, 4.5),
+('🐟', 'Trucha', 'Poco común', 120, 19, 4),
+('🐟', 'Atún', 'Poco común', 150, 22, 3.5),
+('🐙', 'Pulpo', 'Poco común', 170, 24, 3),
+('🦞', 'Langosta', 'Poco común', 190, 25, 2.8),
+('🦈', 'Pez espada', 'Raro', 250, 30, 2),
+('🐬', 'Delfín', 'Raro', 280, 32, 1.8),
+('🐢', 'Tortuga marina', 'Raro', 300, 34, 1.5),
+('🐟', 'Pez payaso', 'Raro', 220, 28, 1.8),
+('🐟', 'Pez ángel', 'Raro', 260, 31, 1.6),
+('🐟', 'Pez león', 'Raro', 290, 33, 1.4),
+('🦑', 'Calamar gigante', 'Épico', 450, 45, 0.9),
+('🦈', 'Tiburón', 'Épico', 500, 50, 0.8),
+('🐋', 'Orca', 'Épico', 600, 55, 0.7),
+('🐉', 'Pez Dragón', 'Épico', 700, 60, 0.6),
+('🐳', 'Ballena', 'Legendario', 1000, 75, 0.45),
+('🐋', 'Ballena Azul', 'Legendario', 1300, 85, 0.35),
+('🐉', 'Serpiente Marina', 'Legendario', 1600, 95, 0.28),
+('🌊', 'Leviatán', 'Mítico', 3000, 140, 0.12),
+('💜', 'Pez Violeta', 'Mítico', 4000, 170, 0.08),
+('🌌', 'Pez Cósmico', 'Mítico', 5000, 200, 0.06),
+('✨', 'Pez Celestial', 'Mítico', 6500, 230, 0.045),
+('👑', 'Pez Real', 'Mítico', 7500, 250, 0.035),
+('🐟', 'Sardina Dorada', 'Raro', 355, 35, 1.4),
+('🐟', 'Caballa Azul', 'Raro', 358, 35, 1.4),
+('🐟', 'Atún Dorado', 'Épico', 785, 62, 0.7),
+('🐟', 'Salmón Real', 'Épico', 790, 62, 0.7),
+('🐟', 'Trucha Arcoíris', 'Épico', 795, 63, 0.7),
+('🐟', 'Pez Cristal', 'Épico', 800, 63, 0.7),
+('🐟', 'Pez Linterna', 'Épico', 805, 63, 0.7),
+('🐟', 'Pez Abisal', 'Legendario', 1836, 142, 0.25),
+('🐟', 'Pez Fantasma', 'Legendario', 1844, 143, 0.25),
+('🐟', 'Pez Espectral', 'Legendario', 1852, 144, 0.25),
+('🦈', 'Tiburón Martillo', 'Legendario', 1860, 145, 0.25),
+('🦈', 'Tiburón Blanco', 'Legendario', 1868, 146, 0.25),
+('🦈', 'Tiburón Abisal', 'Legendario', 1876, 147, 0.25),
+('🐋', 'Ballena Fantasma', 'Legendario', 1884, 148, 0.25),
+('🐉', 'Dragón Marino', 'Legendario', 1892, 149, 0.25),
+('🐉', 'Dragón Abisal', 'Legendario', 1900, 150, 0.25),
+('🦑', 'Kraken Joven', 'Legendario', 1908, 151, 0.25),
+('🦑', 'Kraken', 'Mítico', 4780, 284, 0.08),
+('🐲', 'Dragón Marino Celestial', 'Mítico', 4795, 286, 0.08),
+('🌌', 'Ser Cósmico', 'Mítico', 4810, 288, 0.08),
+('🌌', 'Pez Nebulosa', 'Mítico', 4825, 290, 0.08),
+('🌌', 'Pez Galaxia', 'Mítico', 4840, 292, 0.08),
+('🌠', 'Pez Estelar', 'Mítico', 4855, 294, 0.08),
+('🌙', 'Pez Lunar', 'Mítico', 4870, 296, 0.08),
+('☀️', 'Pez Solar', 'Mítico', 4885, 298, 0.08),
+('🌈', 'Pez Prisma', 'Mítico', 4900, 300, 0.08),
+('💎', 'Pez Diamante', 'Mítico', 4915, 302, 0.08),
+('💜', 'Pez Amatista', 'Mítico', 4930, 304, 0.08),
+('🔮', 'Pez Arcano', 'Mítico', 4945, 306, 0.08),
+('👑', 'Pez Emperador', 'Mítico', 4960, 308, 0.08),
+('🐟', 'Carpa', 'Común', 95, 14, 5.0),
+('🐟', 'Barbo', 'Común', 96, 14, 5.0),
+('🐟', 'Sargo', 'Común', 97, 14, 5.0),
+('🐟', 'Dorada', 'Común', 98, 14, 5.0),
+('🐟', 'Bacalao', 'Común', 99, 14, 5.0),
+('🐟', 'Lenguado', 'Común', 100, 15, 5.0),
+('🐟', 'Jurel', 'Común', 101, 15, 5.0),
+('🐟', 'Sierra', 'Común', 102, 15, 5.0),
+('🦀', 'Cangrejo Azul', 'Poco común', 236, 27, 3.0),
+('🦀', 'Cangrejo Rey', 'Raro', 472, 42, 1.4),
+('🦐', 'Camarón Tigre', 'Poco común', 240, 27, 3.0),
+('🦞', 'Bogavante', 'Raro', 478, 43, 1.4),
+('🐚', 'Ostra', 'Poco común', 244, 27, 3.0),
+('🐚', 'Ostra Perla', 'Raro', 484, 43, 1.4),
+('🐚', 'Concha Abisal', 'Épico', 995, 76, 0.7),
+('🪼', 'Medusa', 'Poco común', 250, 28, 3.0),
+('🪼', 'Medusa Gigante', 'Raro', 493, 44, 1.4),
+('🪼', 'Medusa Cristal', 'Épico', 1010, 77, 0.7),
+('🐠', 'Pez Mariposa', 'Poco común', 256, 28, 3.0),
+('🐠', 'Pez Mandarín', 'Raro', 502, 44, 1.4),
+('🐠', 'Pez Arcoíris', 'Épico', 1025, 78, 0.7),
+('🐡', 'Pez Globo Dorado', 'Raro', 508, 45, 1.4),
+('🐡', 'Pez Globo Violeta', 'Épico', 1035, 79, 0.7),
+('🐙', 'Pulpo Violeta', 'Épico', 1040, 79, 0.7),
+('🐙', 'Pulpo Cristal', 'Legendario', 2212, 189, 0.25),
+('🦑', 'Calamar Violeta', 'Épico', 1050, 80, 0.7),
+('🐬', 'Delfín Dorado', 'Épico', 1055, 80, 0.7),
+('🐬', 'Delfín Celestial', 'Legendario', 2236, 192, 0.25),
+('🐢', 'Tortuga Dorada', 'Épico', 1065, 81, 0.7),
+('🐢', 'Tortuga Celestial', 'Legendario', 2252, 194, 0.25),
+('🐊', 'Cocodrilo Marino', 'Legendario', 2260, 195, 0.25),
+('🐍', 'Serpiente Marina', 'Legendario', 2268, 196, 0.25),
+('🦀', 'Cangrejo Fantasma', 'Legendario', 2276, 197, 0.25),
+('🦐', 'Camarón Cósmico', 'Mítico', 5470, 376, 0.08),
+('🐟', 'Pez Vacío', 'Mítico', 5485, 378, 0.08),
+('🐟', 'Pez Dimensional', 'Mítico', 5500, 380, 0.08)
 ]
 
 
@@ -2204,12 +3092,20 @@ async def vender_minerales(interaction: discord.Interaction):
     precios = {
         "Piedra": 10,
         "Carbón": 20,
+        "Arcilla": 25,
         "Hierro": 40,
         "Cobre": 60,
+        "Obsidiana": 90,
         "Plata": 120,
+        "Esmeralda": 180,
+        "Rubí": 220,
         "Oro": 250,
+        "Zafiro": 350,
+        "Ámbar": 400,
         "Diamante": 500,
-        "Cristal Violeta": 850
+        "Fragmento Abisal": 750,
+        "Cristal Violeta": 850,
+        "Núcleo Cósmico": 1500
     }
 
     inventario = await database.get_mining_inventory(
@@ -2293,12 +3189,20 @@ async def vender_peces(interaction: discord.Interaction):
     precios = {
         "Sardina": 15,
         "Pez tropical": 30,
+        "Camarón": 35,
+        "Cangrejo": 40,
         "Pez globo": 50,
         "Calamar": 80,
+        "Almeja": 90,
+        "Langosta": 130,
         "Pulpo": 150,
+        "Delfín": 220,
+        "Tortuga marina": 250,
         "Tiburón": 300,
+        "Pez Dragón": 500,
         "Ballena": 600,
-        "Pez Violeta": 1000
+        "Pez Violeta": 1000,
+        "Leviatán": 2000
     }
 
     inventario = await database.get_fish_inventory(
@@ -3014,10 +3918,150 @@ async def violet_crear_canal(guild):
         return None
 
 
+async def violet_obtener_mejoras_actividad(guild_id, user_id):
+
+    inventario = await database.get_inventory(
+        user_id,
+        guild_id
+    )
+
+    mejoras = {}
+
+    nombres_canonicos = {
+        "pico de hierro": "Pico de Hierro",
+        "pico de oro": "Pico de Oro",
+        "pico de diamante": "Pico de Diamante",
+        "caña reforzada": "Caña Reforzada",
+        "caña de oro": "Caña de Oro",
+        "caña de diamante": "Caña de Diamante",
+        "detector de minerales": "Detector de Minerales",
+        "taladro minero": "Taladro Minero",
+        "núcleo violeta": "Núcleo Violeta",
+        "radar de peces": "Radar de Peces",
+        "señuelo abisal": "Señuelo Abisal",
+        "señuelo violeta": "Señuelo Violeta",
+        "suerte minera": "Suerte Minera",
+        "suerte pesquera": "Suerte Pesquera",
+        "minería rápida": "Minería Rápida",
+        "pesca rápida": "Pesca Rápida",
+        "fortuna legendaria": "Fortuna Legendaria",
+        "bendición de violet": "Bendición de Violet"
+    }
+
+    for item, cantidad in inventario:
+
+        if cantidad <= 0:
+            continue
+
+        nombre = str(item).strip().lower()
+        nombre = nombres_canonicos.get(nombre, item)
+
+        mejoras[nombre] = cantidad
+
+    return mejoras
+
+
+def violet_aplicar_mejoras_pesos(pesos, mejoras, tipo):
+
+    pesos = list(pesos)
+
+    if tipo == "mineria":
+
+        if mejoras.get("Pico de Diamante", 0) > 0:
+            multiplicador = 1.35
+        elif mejoras.get("Pico de Oro", 0) > 0:
+            multiplicador = 1.20
+        elif mejoras.get("Pico de Hierro", 0) > 0:
+            multiplicador = 1.10
+        else:
+            multiplicador = 1.0
+
+        for i in range(len(pesos)):
+            if i >= 4:
+                pesos[i] *= multiplicador
+
+        if mejoras.get("Detector de Minerales", 0) > 0:
+            for i in range(len(pesos)):
+                if i >= 4:
+                    pesos[i] *= 1.20
+
+        if mejoras.get("Taladro Minero", 0) > 0:
+            for i in range(len(pesos)):
+                if i >= 5:
+                    pesos[i] *= 1.25
+
+        if mejoras.get("Núcleo Violeta", 0) > 0:
+            for i in range(len(pesos)):
+                if i >= 6:
+                    pesos[i] *= 1.40
+
+        if mejoras.get("Suerte Minera", 0) > 0:
+            for i in range(len(pesos)):
+                if i >= 4:
+                    pesos[i] *= 1.15
+
+        if mejoras.get("Fortuna Legendaria", 0) > 0:
+            for i in range(len(pesos)):
+                if i >= 5:
+                    pesos[i] *= 1.30
+
+        if mejoras.get("Bendición de Violet", 0) > 0:
+            for i in range(len(pesos)):
+                if i >= 6:
+                    pesos[i] *= 1.50
+
+    else:
+
+        if mejoras.get("Caña de Diamante", 0) > 0:
+            multiplicador = 1.35
+        elif mejoras.get("Caña de Oro", 0) > 0:
+            multiplicador = 1.20
+        elif mejoras.get("Caña Reforzada", 0) > 0:
+            multiplicador = 1.10
+        else:
+            multiplicador = 1.0
+
+        for i in range(len(pesos)):
+            if i >= 4:
+                pesos[i] *= multiplicador
+
+        if mejoras.get("Radar de Peces", 0) > 0:
+            for i in range(len(pesos)):
+                if i >= 4:
+                    pesos[i] *= 1.20
+
+        if mejoras.get("Señuelo Abisal", 0) > 0:
+            for i in range(len(pesos)):
+                if i >= 5:
+                    pesos[i] *= 1.25
+
+        if mejoras.get("Señuelo Violeta", 0) > 0:
+            for i in range(len(pesos)):
+                if i >= 6:
+                    pesos[i] *= 1.40
+
+        if mejoras.get("Suerte Pesquera", 0) > 0:
+            for i in range(len(pesos)):
+                if i >= 4:
+                    pesos[i] *= 1.15
+
+        if mejoras.get("Fortuna Legendaria", 0) > 0:
+            for i in range(len(pesos)):
+                if i >= 5:
+                    pesos[i] *= 1.30
+
+        if mejoras.get("Bendición de Violet", 0) > 0:
+            for i in range(len(pesos)):
+                if i >= 6:
+                    pesos[i] *= 1.50
+
+    return pesos
+
+
 async def violet_actividad_automatica(guild):
 
     if bot.user is None:
-        return
+        return None
 
     canal = discord.utils.get(
         guild.text_channels,
@@ -3025,7 +4069,7 @@ async def violet_actividad_automatica(guild):
     )
 
     if canal is None:
-        return
+        return None
 
     try:
 
@@ -3047,6 +4091,17 @@ async def violet_actividad_automatica(guild):
                 for i in range(len(pesos)):
                     if i >= 4:
                         pesos[i] *= 1 + ((pico - 1) * 0.15)
+
+            mejoras = await violet_obtener_mejoras_actividad(
+                guild.id,
+                bot.user.id
+            )
+
+            pesos = violet_aplicar_mejoras_pesos(
+                pesos,
+                mejoras,
+                "mineria"
+            )
 
             mineral = random.choices(
                 MINERALES,
@@ -3076,12 +4131,6 @@ async def violet_actividad_automatica(guild):
                 nombre
             )
 
-            await database.add_balance(
-                bot.user.id,
-                guild.id,
-                valor
-            )
-
             embed = discord.Embed(
                 title="⛏️ Violet está minando",
                 description=(
@@ -3106,6 +4155,17 @@ async def violet_actividad_automatica(guild):
                 for i in range(len(pesos)):
                     if i >= 4:
                         pesos[i] *= 1 + ((caña - 1) * 0.15)
+
+            mejoras = await violet_obtener_mejoras_actividad(
+                guild.id,
+                bot.user.id
+            )
+
+            pesos = violet_aplicar_mejoras_pesos(
+                pesos,
+                mejoras,
+                "pesca"
+            )
 
             pez = random.choices(
                 PECES,
@@ -3135,12 +4195,6 @@ async def violet_actividad_automatica(guild):
                 nombre
             )
 
-            await database.add_balance(
-                bot.user.id,
-                guild.id,
-                valor
-            )
-
             embed = discord.Embed(
                 title="🎣 Violet está pescando",
                 description=(
@@ -3165,6 +4219,950 @@ async def violet_actividad_automatica(guild):
         )
 
 
+
+# =========================================================
+
+# =========================================================
+# VIOLET PESCA AUTOMATICA V2
+# Interacción automática con usuarios activos
+# =========================================================
+
+VIOLET_PESCA_AUTOMATICA_V2 = True
+VIOLET_PESCA_CANAL_NOMBRE = "🎣・violet-pesca"
+VIOLET_PESCA_ACTIVIDAD_SEGUNDOS = 30 * 60
+VIOLET_PESCA_INTERVALO = 5 * 60
+
+# guild_id -> {user_id: ultimo_timestamp}
+violet_pesca_usuarios_activos = {}
+
+# Evita iniciar dos loops
+violet_pesca_task_v2 = None
+
+
+async def violet_obtener_canal_pesca(guild):
+    """
+    Busca el canal de pesca automática.
+    Si no existe, Violet lo crea automáticamente.
+    """
+
+    try:
+        canal = discord.utils.get(
+            guild.text_channels,
+            name=VIOLET_PESCA_CANAL_NOMBRE
+        )
+
+        if canal:
+            return canal
+
+        canal = await guild.create_text_channel(
+            VIOLET_PESCA_CANAL_NOMBRE,
+            reason="Violet - creación automática del canal de pesca"
+        )
+
+        print(
+            f"🎣 Canal de pesca creado automáticamente en "
+            f"{guild.name}: #{canal.name}"
+        )
+
+        try:
+            embed = discord.Embed(
+                title="🎣 Bienvenido al canal de pesca de Violet",
+                description=(
+                    "Aquí Violet organizará expediciones de pesca automáticas.\n\n"
+                    "👀 **¿Cómo participa la comunidad?**\n"
+                    "• Escribe en este canal para que Violet sepa que estás activo.\n"
+                    "• Violet podrá llamarte durante una expedición.\n"
+                    "• Pulsa los botones de los eventos para intentar conseguir peces.\n"
+                    "• Los peces obtenidos se guardan en tu inventario.\n"
+                    "• También puedes recibir **VLC** y XP.\n\n"
+                    "⚠️ Discord no permite saber literalmente quién está "
+                    "mirando un canal, por lo que Violet utiliza la actividad "
+                    "reciente como indicador de presencia."
+                ),
+                color=discord.Color.purple()
+            )
+
+            embed.set_footer(text="Violet • Pesca automática")
+
+            await canal.send(embed=embed)
+
+        except Exception as error:
+            print(f"⚠️ No pude publicar bienvenida de pesca: {error}")
+
+        return canal
+
+    except discord.Forbidden:
+        print(
+            f"❌ Violet no tiene permisos para crear el canal de pesca "
+            f"en {guild.name}"
+        )
+        return None
+
+    except Exception as error:
+        print(f"❌ Error creando canal de pesca: {error}")
+        return None
+
+
+def violet_pesca_marcar_usuario(guild_id, user_id):
+    ahora = time.time()
+
+    usuarios = violet_pesca_usuarios_activos.setdefault(
+        guild_id,
+        {}
+    )
+
+    usuarios[user_id] = ahora
+
+
+def violet_pesca_obtener_usuarios_activos(guild):
+    ahora = time.time()
+
+    usuarios = violet_pesca_usuarios_activos.get(
+        guild.id,
+        {}
+    )
+
+    activos = []
+
+    for user_id, ultimo in list(usuarios.items()):
+
+        if ahora - ultimo > VIOLET_PESCA_ACTIVIDAD_SEGUNDOS:
+            del usuarios[user_id]
+            continue
+
+        miembro = guild.get_member(user_id)
+
+        if miembro is None:
+            continue
+
+        if miembro.bot:
+            continue
+
+        activos.append(miembro)
+
+    return activos
+
+
+async def violet_pesca_recompensar(interaction, pez):
+    """
+    Entrega el pez y recompensa al usuario.
+    """
+
+    try:
+        emoji, nombre, rareza, valor, xp_ganado, peso = pez
+
+        guild_id = interaction.guild.id
+        user_id = interaction.user.id
+
+        # Guardar en colección
+        try:
+            await database.add_collection_item(
+                user_id,
+                guild_id,
+                "pesca",
+                nombre
+            )
+        except Exception as error:
+            print(f"⚠️ Error colección pesca automática: {error}")
+
+        # Guardar pez
+        try:
+            await database.add_fish(
+                user_id,
+                guild_id,
+                nombre,
+                1
+            )
+        except Exception as error:
+            print(f"⚠️ Error inventario pesca automática: {error}")
+
+        # Recompensa VLC
+        recompensa = max(1, int(valor))
+
+        try:
+            await database.add_balance(
+                user_id,
+                guild_id,
+                recompensa
+            )
+        except Exception as error:
+            print(f"⚠️ Error recompensa VLC pesca automática: {error}")
+
+        # XP de pesca si existe la función
+        try:
+            funcion_xp = getattr(
+                database,
+                "add_fishing_xp",
+                None
+            )
+
+            if funcion_xp:
+                await funcion_xp(
+                    user_id,
+                    guild_id,
+                    xp_ganado
+                )
+        except Exception as error:
+            print(f"⚠️ No se pudo añadir XP de pesca automática: {error}")
+
+        return emoji, nombre, rareza, recompensa, xp_ganado
+
+    except Exception as error:
+        print(f"❌ Error en recompensa de pesca automática: {error}")
+        return None
+
+
+class VioletPescaAutomaticaView(discord.ui.View):
+
+    def __init__(self, target_id, pez, timeout=90):
+        super().__init__(timeout=timeout)
+
+        self.target_id = target_id
+        self.pez = pez
+        self.participado = False
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+
+    @discord.ui.button(
+        label="🎣 Pescar",
+        style=discord.ButtonStyle.primary,
+        custom_id="violet_pesca_automatica_pescar"
+    )
+    async def pescar_boton(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+
+        if interaction.user.id != self.target_id:
+            await interaction.response.send_message(
+                "🎣 Violet está interactuando con otra persona en esta expedición.",
+                ephemeral=True
+            )
+            return
+
+        if self.participado:
+            await interaction.response.send_message(
+                "🎣 Ya participaste en esta expedición.",
+                ephemeral=True
+            )
+            return
+
+        self.participado = True
+
+        violet_pesca_marcar_usuario(
+            interaction.guild.id,
+            interaction.user.id
+        )
+
+        resultado = await violet_pesca_recompensar(
+            interaction,
+            self.pez
+        )
+
+        if resultado is None:
+            await interaction.response.send_message(
+                "❌ No pude registrar tu captura.",
+                ephemeral=True
+            )
+            return
+
+        emoji, nombre, rareza, recompensa, xp_ganado = resultado
+
+        for item in self.children:
+            item.disabled = True
+
+        embed = discord.Embed(
+            title="🎣 ¡Captura realizada!",
+            description=(
+                f"{interaction.user.mention} consiguió:\n\n"
+                f"{emoji} **{nombre}**\n"
+                f"✨ Rareza: **{rareza}**\n"
+                f"💰 Recompensa: **+{recompensa:,} VLC**\n"
+                f"⭐ XP: **+{xp_ganado}**"
+            ),
+            color=discord.Color.purple()
+        )
+
+        embed.set_footer(text="Violet • Pesca automática")
+
+        await interaction.response.edit_message(
+            embed=embed,
+            view=self
+        )
+
+
+async def violet_pesca_evento_automatico(guild):
+    try:
+
+        canal = await violet_obtener_canal_pesca(guild)
+
+        if canal is None:
+            return
+
+        activos = violet_pesca_obtener_usuarios_activos(guild)
+
+        if not activos:
+            return
+
+        usuario = random.choice(activos)
+
+        # Usar la lista PECES existente
+        if not globals().get("PECES"):
+            print("⚠️ No existe la lista PECES.")
+            return
+
+        peces = PECES
+
+        pesos = []
+
+        for pez in peces:
+            try:
+                pesos.append(float(pez[5]))
+            except Exception:
+                pesos.append(1.0)
+
+        pez = random.choices(
+            peces,
+            weights=pesos,
+            k=1
+        )[0]
+
+        emoji, nombre, rareza, valor, xp_ganado, peso = pez
+
+        # Registrar que Violet volvió a interactuar con el usuario
+        violet_pesca_marcar_usuario(
+            guild.id,
+            usuario.id
+        )
+
+        embed = discord.Embed(
+            title="🎣 ¡Violet encontró algo!",
+            description=(
+                f"{usuario.mention}\n\n"
+                "Violet lanzó la caña y algo mordió el anzuelo.\n\n"
+                f"🌊 **Parece ser:** {emoji} **{nombre}**\n"
+                f"✨ Rareza: **{rareza}**\n\n"
+                "¡Pulsa **🎣 Pescar** antes de que escape!"
+            ),
+            color=discord.Color.purple()
+        )
+
+        embed.set_footer(
+            text="Violet • Expedición automática"
+        )
+
+        view = VioletPescaAutomaticaView(
+            usuario.id,
+            pez
+        )
+
+        await canal.send(
+            content=(
+                f"🎣 {usuario.mention}, "
+                "¡Violet quiere que participes!"
+            ),
+            embed=embed,
+            view=view
+        )
+
+    except discord.Forbidden:
+        print(
+            f"❌ Violet no puede enviar mensajes en "
+            f"la pesca de {guild.name}"
+        )
+
+    except Exception as error:
+        print(
+            f"❌ Error en evento de pesca automática "
+            f"({guild.name}): {error}"
+        )
+
+
+async def violet_pesca_loop_v2():
+    await asyncio.sleep(20)
+
+    while True:
+
+        try:
+
+            for guild in list(bot.guilds):
+
+                try:
+                    await violet_obtener_canal_pesca(guild)
+
+                    await violet_pesca_evento_automatico(
+                        guild
+                    )
+
+                except Exception as error:
+                    print(
+                        f"⚠️ Error procesando pesca en "
+                        f"{guild.name}: {error}"
+                    )
+
+        except Exception as error:
+            print(
+                f"❌ Error general del loop de pesca automática: {error}"
+            )
+
+        await asyncio.sleep(
+            VIOLET_PESCA_INTERVALO
+        )
+
+
+def violet_iniciar_pesca_automatica_v2():
+
+    global violet_pesca_task_v2
+
+    try:
+
+        if (
+            violet_pesca_task_v2 is None
+            or violet_pesca_task_v2.done()
+        ):
+
+            violet_pesca_task_v2 = asyncio.create_task(
+                violet_pesca_loop_v2()
+            )
+
+            print(
+                "🎣 Violet Pesca Automática V2 iniciada."
+            )
+
+    except Exception as error:
+        print(
+            f"❌ Error iniciando pesca automática V2: {error}"
+        )
+
+
+# =========================================================
+# FIN VIOLET PESCA AUTOMATICA V2
+# =========================================================
+
+
+# VISTA PAGINADA DE TIENDA MINERÍA / PESCA
+# =========================================================
+
+class TiendaMineriaPescaView(discord.ui.View):
+
+    def __init__(self, pagina=1):
+        super().__init__(timeout=120)
+        self.pagina = pagina
+
+        self.anterior.disabled = pagina <= 1
+        self.siguiente.disabled = pagina >= 3
+
+    @discord.ui.button(
+        label="Anterior",
+        emoji="◀️",
+        style=discord.ButtonStyle.secondary
+    )
+    async def anterior(self, interaction, button):
+
+        self.pagina -= 1
+
+        embed = crear_embed_tienda_mineria_pesca(
+            self.pagina
+        )
+
+        self.anterior.disabled = self.pagina <= 1
+        self.siguiente.disabled = self.pagina >= 3
+
+        await interaction.response.edit_message(
+            embed=embed,
+            view=self
+        )
+
+    @discord.ui.button(
+        label="Siguiente",
+        emoji="▶️",
+        style=discord.ButtonStyle.primary
+    )
+    async def siguiente(self, interaction, button):
+
+        self.pagina += 1
+
+        embed = crear_embed_tienda_mineria_pesca(
+            self.pagina
+        )
+
+        self.anterior.disabled = self.pagina <= 1
+        self.siguiente.disabled = self.pagina >= 3
+
+        await interaction.response.edit_message(
+            embed=embed,
+            view=self
+        )
+
+
+# =========================================================
+# GESTIÓN ECONÓMICA AUTÓNOMA DE VIOLET
+# =========================================================
+
+VIOLET_INVENTARIO_MAXIMO = 40
+VIOLET_RESERVA_MONEDAS = 1000
+
+VIOLET_RAREZAS_PROTEGIDAS = {
+    "Raro",
+    "Épico",
+    "Legendario",
+    "Mítico"
+}
+
+
+async def violet_gestion_economica(guild):
+
+    if bot.user is None:
+        return
+
+    user_id = bot.user.id
+    guild_id = guild.id
+
+    try:
+
+        vendidos_mineria = []
+        vendidos_pesca = []
+        monedas_vendidas = 0
+
+        # -------------------------------------------------
+        # INVENTARIO DE MINERÍA
+        # -------------------------------------------------
+
+        inventario_mineria = await database.get_mining_inventory(
+            guild_id,
+            user_id
+        )
+
+        total_mineria = sum(
+            cantidad
+            for _, cantidad in inventario_mineria
+        )
+
+        if total_mineria >= VIOLET_INVENTARIO_MAXIMO:
+
+            precios_mineria = {
+                "Piedra": 10,
+                "Carbón": 20,
+                "Arcilla": 25,
+                "Hierro": 40,
+                "Cobre": 60,
+                "Obsidiana": 90,
+                "Plata": 120,
+                "Esmeralda": 180,
+                "Rubí": 220,
+                "Oro": 250,
+                "Zafiro": 350,
+                "Ámbar": 400,
+                "Diamante": 500,
+                "Fragmento Abisal": 750,
+                "Cristal Violeta": 850,
+                "Núcleo Cósmico": 1500
+            }
+
+            rarezas_mineria = {
+                "Piedra": "Común",
+                "Carbón": "Común",
+                "Arcilla": "Común",
+                "Hierro": "Poco común",
+                "Cobre": "Poco común",
+                "Obsidiana": "Poco común",
+                "Plata": "Raro",
+                "Esmeralda": "Raro",
+                "Rubí": "Raro",
+                "Oro": "Épico",
+                "Zafiro": "Épico",
+                "Ámbar": "Épico",
+                "Diamante": "Legendario",
+                "Fragmento Abisal": "Legendario",
+                "Cristal Violeta": "Mítico",
+                "Núcleo Cósmico": "Mítico"
+            }
+
+            for item, cantidad in inventario_mineria:
+
+                rareza = rarezas_mineria.get(
+                    item,
+                    "Común"
+                )
+
+                if rareza in VIOLET_RAREZAS_PROTEGIDAS:
+                    continue
+
+                precio = precios_mineria.get(item, 0)
+
+                if precio <= 0:
+                    continue
+
+                if await database.remove_mining_item(
+                    guild_id,
+                    user_id,
+                    item,
+                    cantidad
+                ):
+                    ganancia = precio * cantidad
+                    monedas_vendidas += ganancia
+
+                    vendidos_mineria.append(
+                        f"⛏️ {item} x{cantidad}"
+                    )
+
+        # -------------------------------------------------
+        # INVENTARIO DE PESCA
+        # -------------------------------------------------
+
+        inventario_pesca = await database.get_fish_inventory(
+            guild_id,
+            user_id
+        )
+
+        total_pesca = sum(
+            cantidad
+            for _, cantidad in inventario_pesca
+        )
+
+        if total_pesca >= VIOLET_INVENTARIO_MAXIMO:
+
+            precios_pesca = {
+                "Sardina": 15,
+                "Pez tropical": 30,
+                "Camarón": 35,
+                "Cangrejo": 40,
+                "Pez globo": 50,
+                "Calamar": 80,
+                "Almeja": 90,
+                "Langosta": 130,
+                "Pulpo": 150,
+                "Delfín": 220,
+                "Tortuga marina": 250,
+                "Tiburón": 300,
+                "Pez Dragón": 500,
+                "Ballena": 600,
+                "Pez Violeta": 1000,
+                "Leviatán": 2000
+            }
+
+            rarezas_pesca = {
+                "Sardina": "Común",
+                "Pez tropical": "Común",
+                "Camarón": "Común",
+                "Cangrejo": "Común",
+                "Pez globo": "Poco común",
+                "Calamar": "Poco común",
+                "Almeja": "Poco común",
+                "Langosta": "Poco común",
+                "Pulpo": "Raro",
+                "Delfín": "Raro",
+                "Tortuga marina": "Raro",
+                "Tiburón": "Épico",
+                "Pez Dragón": "Épico",
+                "Ballena": "Legendario",
+                "Pez Violeta": "Mítico",
+                "Leviatán": "Mítico"
+            }
+
+            for item, cantidad in inventario_pesca:
+
+                rareza = rarezas_pesca.get(
+                    item,
+                    "Común"
+                )
+
+                if rareza in VIOLET_RAREZAS_PROTEGIDAS:
+                    continue
+
+                precio = precios_pesca.get(item, 0)
+
+                if precio <= 0:
+                    continue
+
+                if await database.remove_fish(
+                    guild_id,
+                    user_id,
+                    item,
+                    cantidad
+                ):
+                    ganancia = precio * cantidad
+                    monedas_vendidas += ganancia
+
+                    vendidos_pesca.append(
+                        f"🎣 {item} x{cantidad}"
+                    )
+
+        # -------------------------------------------------
+        # VENTA
+        # -------------------------------------------------
+
+        if monedas_vendidas > 0:
+
+            await database.add_balance(
+                user_id,
+                guild_id,
+                monedas_vendidas
+            )
+
+        # -------------------------------------------------
+        # MEJORAS AUTOMÁTICAS
+        # -------------------------------------------------
+
+        datos = await database.get_user(
+            user_id,
+            guild_id
+        )
+
+        monedas = datos[2]
+
+        nivel_mina, xp_mina, pico = (
+            await database.get_mining_stats(
+                guild_id,
+                user_id
+            )
+        )
+
+        nivel_pesca, xp_pesca, cana = (
+            await database.get_fishing_stats(
+                guild_id,
+                user_id
+            )
+        )
+
+        mejoras = []
+
+        # Intentamos mejorar varias veces mientras
+        # Violet conserve su reserva.
+        while pico < 10:
+
+            costo = COSTOS_PICO.get(
+                pico + 1,
+                0
+            )
+
+            if costo <= 0:
+                break
+
+            if monedas - costo < VIOLET_RESERVA_MONEDAS:
+                break
+
+            if not await database.remove_balance(
+                user_id,
+                guild_id,
+                costo
+            ):
+                break
+
+            pico += 1
+
+            await database.set_mining_tool_level(
+                guild_id,
+                user_id,
+                pico
+            )
+
+            monedas -= costo
+
+            mejoras.append(
+                f"⛏️ Pico nivel {pico}"
+            )
+
+        while cana < 10:
+
+            costo = COSTOS_CANA.get(
+                cana + 1,
+                0
+            )
+
+            if costo <= 0:
+                break
+
+            if monedas - costo < VIOLET_RESERVA_MONEDAS:
+                break
+
+            if not await database.remove_balance(
+                user_id,
+                guild_id,
+                costo
+            ):
+                break
+
+            cana += 1
+
+            await database.set_fishing_rod_level(
+                guild_id,
+                user_id,
+                cana
+            )
+
+            monedas -= costo
+
+            mejoras.append(
+                f"🎣 Caña nivel {cana}"
+            )
+
+        # -------------------------------------------------
+        # COMPRAS AUTOMÁTICAS DE VIOLET
+        # -------------------------------------------------
+
+        inventario_general = await database.get_inventory(
+            user_id,
+            guild_id
+        )
+
+        objetos_poseidos = {
+            str(item).strip().lower()
+            for item, cantidad in inventario_general
+            if cantidad > 0
+        }
+
+        compras_prioritarias = [
+            # Herramientas principales
+            ("Pico de Diamante", 50000),
+            ("Caña de Diamante", 50000),
+            ("Pico de Oro", 10000),
+            ("Caña de Oro", 10000),
+            ("Pico de Hierro", 2500),
+            ("Caña Reforzada", 2500),
+
+            # Mejoras avanzadas
+            ("Detector de Minerales", 75000),
+            ("Radar de Peces", 75000),
+            ("Taladro Minero", 150000),
+            ("Señuelo Abisal", 150000),
+            ("Núcleo Violeta", 350000),
+            ("Señuelo Violeta", 350000),
+
+            # Suerte
+            ("Suerte Minera", 100000),
+            ("Suerte Pesquera", 100000),
+
+            # Velocidad
+            ("Minería Rápida", 150000),
+            ("Pesca Rápida", 150000),
+
+            # Máximas
+            ("Fortuna Legendaria", 300000),
+            ("Bendición de Violet", 750000)
+        ]
+
+        for nombre_objeto, precio_objeto in compras_prioritarias:
+
+            if nombre_objeto.lower() in objetos_poseidos:
+                continue
+
+            if monedas - precio_objeto < VIOLET_RESERVA_MONEDAS:
+                continue
+
+            comprado = await database.remove_balance(
+                user_id,
+                guild_id,
+                precio_objeto
+            )
+
+            if not comprado:
+                continue
+
+            await database.add_item(
+                user_id,
+                guild_id,
+                nombre_objeto,
+                1
+            )
+
+            monedas -= precio_objeto
+
+            mejoras.append(
+                f"🛒 Compró **{nombre_objeto}** "
+                f"por **{precio_objeto:,}** monedas"
+            )
+
+            # Solo una compra por ciclo.
+            break
+
+        # -------------------------------------------------
+        # BANCO AUTOMÁTICO
+        # -------------------------------------------------
+
+        VIOLET_RESERVA_BANCO = 5000
+
+        if monedas > VIOLET_RESERVA_BANCO:
+
+            excedente = monedas - VIOLET_RESERVA_BANCO
+            deposito = excedente // 2
+
+            if deposito > 0:
+
+                if await database.deposit_bank(
+                    user_id,
+                    guild_id,
+                    deposito
+                ):
+                    monedas -= deposito
+
+                    mejoras.append(
+                        f"🏦 Depositó **{deposito:,} monedas** "
+                        f"en el banco"
+                    )
+
+        # -------------------------------------------------
+        # AVISO EN EL CANAL
+        # -------------------------------------------------
+
+        if vendidos_mineria or vendidos_pesca or mejoras:
+
+            canal = discord.utils.get(
+                guild.text_channels,
+                name=VIOLET_CANAL_NOMBRE
+            )
+
+            if canal:
+
+                partes = []
+
+                if vendidos_mineria:
+                    partes.append(
+                        "⛏️ **Minerales vendidos:**\n"
+                        + "\n".join(vendidos_mineria)
+                    )
+
+                if vendidos_pesca:
+                    partes.append(
+                        "🎣 **Peces vendidos:**\n"
+                        + "\n".join(vendidos_pesca)
+                    )
+
+                if monedas_vendidas:
+                    partes.append(
+                        f"💰 **Ganancia por ventas:** "
+                        f"{monedas_vendidas:,} monedas"
+                    )
+
+                if mejoras:
+                    partes.append(
+                        "🛠️ **Mejoras automáticas:**\n"
+                        + "\n".join(mejoras)
+                    )
+
+                embed = discord.Embed(
+                    title="💜 Violet gestionó su economía",
+                    description="\n\n".join(partes),
+                    color=discord.Color.purple()
+                )
+
+                embed.set_footer(
+                    text="Violet • Gestión económica autónoma"
+                )
+
+                await canal.send(embed=embed)
+
+    except Exception as error:
+
+        print(
+            f"❌ Error en gestión económica autónoma "
+            f"({guild.name}): {error}"
+        )
+
+
 async def violet_loop_actividades():
 
     await bot.wait_until_ready()
@@ -3172,6 +5170,8 @@ async def violet_loop_actividades():
     while not bot.is_closed():
 
         try:
+            intervalo_actual = VIOLET_INTERVALO
+
             for guild in bot.guilds:
 
                 canal = discord.utils.get(
@@ -3180,14 +5180,65 @@ async def violet_loop_actividades():
                 )
 
                 if canal:
-                    await violet_actividad_automatica(guild)
+
+                    actividad = await violet_actividad_automatica(
+                        guild
+                    )
+
+                    await violet_gestion_economica(
+                        guild
+                    )
+
+                    # ---------------------------------------------
+                    # MEJORAS DE VELOCIDAD
+                    # ---------------------------------------------
+
+                    if bot.user is not None:
+
+                        try:
+                            mejoras = await violet_obtener_mejoras_actividad(
+                                guild.id,
+                                bot.user.id
+                            )
+
+                            mineria_rapida = (
+                                mejoras.get("Minería Rápida", 0) > 0
+                            )
+
+                            pesca_rapida = (
+                                mejoras.get("Pesca Rápida", 0) > 0
+                            )
+
+                            if mineria_rapida and pesca_rapida:
+                                intervalo_actual = min(
+                                    intervalo_actual,
+                                    5
+                                )
+
+                            elif actividad == "mineria" and mineria_rapida:
+                                intervalo_actual = min(
+                                    intervalo_actual,
+                                    10
+                                )
+
+                            elif actividad == "pesca" and pesca_rapida:
+                                intervalo_actual = min(
+                                    intervalo_actual,
+                                    10
+                                )
+
+                        except Exception as error:
+                            print(
+                                f"❌ Error calculando velocidad de Violet "
+                                f"({guild.name}): {error}"
+                            )
 
         except Exception as error:
             print(
                 f"❌ Error en loop autónomo de Violet: {error}"
             )
 
-        await asyncio.sleep(VIOLET_INTERVALO)
+        await asyncio.sleep(intervalo_actual)
 
 
 @bot.tree.command(
@@ -5588,7 +7639,7 @@ class VioletMainView(discord.ui.View):
                 ),
                 color=discord.Color.red()
             ),
-            view=VioletSecurityView()
+            view=VioletSecurityMainView()
         )
 
     @discord.ui.button(
@@ -5726,6 +7777,34 @@ class VioletMainView(discord.ui.View):
                 color=discord.Color.gold()
             ),
             view=VioletLevelsView()
+        )
+
+    @discord.ui.button(
+        label="Mercado",
+        emoji="📈",
+        style=discord.ButtonStyle.success,
+        row=2
+    )
+    async def mercado(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+        embed = discord.Embed(
+            title="📈 Violet Market",
+            description=(
+                "Mercado virtual de **Violet Coin (VLC)**.\n\n"
+                "📊 **Mercado** — `/mercado`\n"
+                "💰 **Invertir** — `/invertir <cantidad>`\n\n"
+                "Compra y gestiona tus inversiones "
+                "según la evolución del mercado."
+            ),
+            color=discord.Color.green()
+        )
+
+        await interaction.response.send_message(
+            embed=embed,
+            ephemeral=True
         )
 
     @discord.ui.button(
@@ -8433,9 +10512,1190 @@ class CasinoView(discord.ui.View):
         )
         self.stop()
 
+# =========================================================
+# 💜 VIOLET MARKET — INTERFAZ
+# =========================================================
+
+class VioletMarketModal(discord.ui.Modal, title="📈 Invertir en Violet Market"):
+
+    cantidad = discord.ui.TextInput(
+        label="Cantidad de monedas",
+        placeholder="Ejemplo: 1000",
+        required=True,
+        min_length=1,
+        max_length=15
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+
+        try:
+            cantidad = int(self.cantidad.value)
+
+        except ValueError:
+            await interaction.response.send_message(
+                "❌ Debes introducir una cantidad válida.",
+                ephemeral=True
+            )
+            return
+
+        if cantidad <= 0:
+            await interaction.response.send_message(
+                "❌ La cantidad debe ser mayor que 0.",
+                ephemeral=True
+            )
+            return
+
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "❌ Este botón solo funciona en servidores.",
+                ephemeral=True
+            )
+            return
+
+        datos = await database.get_violet_market()
+
+        if datos is None:
+            await interaction.response.send_message(
+                "❌ El mercado todavía no está disponible.",
+                ephemeral=True
+            )
+            return
+
+        precio_actual = float(datos[0])
+
+        usuario = await database.get_user(
+            interaction.user.id,
+            interaction.guild.id
+        )
+
+        if usuario is None:
+            await interaction.response.send_message(
+                "❌ No tienes una cuenta económica creada.",
+                ephemeral=True
+            )
+            return
+
+        saldo = usuario[2]
+
+        if saldo < cantidad:
+            await interaction.response.send_message(
+                f"❌ No tienes suficientes monedas.\n\n"
+                f"💰 Saldo: **{saldo:,} 🪙**\n"
+                f"📈 Necesitas: **{cantidad:,} 🪙**",
+                ephemeral=True
+            )
+            return
+
+        await database.remove_balance(
+            interaction.user.id,
+            interaction.guild.id,
+            cantidad
+        )
+
+        await database.create_violet_investment(
+            interaction.user.id,
+            interaction.guild.id,
+            cantidad,
+            precio_actual,
+            __import__("datetime").datetime.now(
+                __import__("datetime").UTC
+            ).isoformat()
+        )
+
+        embed = discord.Embed(
+            title="💜 Inversión realizada",
+            description=(
+                f"Has invertido **{cantidad:,} 🪙** "
+                "en Violet Market.\n\n"
+                f"📈 Precio VLC: **{precio_actual:,.2f}**\n"
+                f"💰 Capital invertido: **{cantidad:,} 🪙**\n\n"
+                "Tu inversión cambiará de valor según el mercado."
+            ),
+            color=discord.Color.purple()
+        )
+
+        embed.set_footer(
+            text="Violet Market • Inversión"
+        )
+
+        await interaction.response.send_message(
+            embed=embed,
+            ephemeral=True
+        )
+
+
+class VioletMarketView(discord.ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Invertir",
+        emoji="📈",
+        style=discord.ButtonStyle.success,
+        custom_id="violet_market_invertir"
+    )
+    async def invertir_button(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+        await interaction.response.send_modal(
+            VioletMarketModal()
+        )
+
+    @discord.ui.button(
+        label="Mi inversión",
+        emoji="💰",
+        style=discord.ButtonStyle.primary,
+        custom_id="violet_market_mi_inversion"
+    )
+    async def mi_inversion_button(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "❌ Este botón solo funciona en servidores.",
+                ephemeral=True
+            )
+            return
+
+        inversiones = await database.get_violet_investments(
+            interaction.user.id,
+            interaction.guild.id
+        )
+
+        if not inversiones:
+            await interaction.response.send_message(
+                "💰 **Mi inversión**\n\n"
+                "No tienes inversiones activas en Violet Market.",
+                ephemeral=True
+            )
+            return
+
+        datos = await database.get_violet_market()
+
+        if datos is None:
+            await interaction.response.send_message(
+                "❌ El mercado todavía no está disponible.",
+                ephemeral=True
+            )
+            return
+
+        precio_actual = float(datos[0])
+
+        total_invertido = sum(
+            float(inversion[1])
+            for inversion in inversiones
+        )
+
+        valor_actual = 0
+
+        for inversion in inversiones:
+            amount = float(inversion[1])
+            buy_price = float(inversion[2])
+
+            if buy_price > 0:
+                valor_actual += (
+                    amount * precio_actual / buy_price
+                )
+
+        diferencia = valor_actual - total_invertido
+
+        if diferencia > 0:
+            tendencia = "📈"
+        elif diferencia < 0:
+            tendencia = "📉"
+        else:
+            tendencia = "➖"
+
+        embed = discord.Embed(
+            title="💰 Mi inversión",
+            description=(
+                f"👤 **Inversionista:** {interaction.user.mention}\n\n"
+                f"💵 **Capital invertido:** "
+                f"`{total_invertido:,.2f} 🪙`\n"
+                f"📊 **Valor actual:** "
+                f"`{valor_actual:,.2f} 🪙`\n"
+                f"{tendencia} **Resultado:** "
+                f"`{diferencia:+,.2f} 🪙`"
+            ),
+            color=discord.Color.purple()
+        )
+
+        embed.add_field(
+            name="📈 Precio VLC actual",
+            value=f"`{precio_actual:,.2f}`",
+            inline=True
+        )
+
+        embed.add_field(
+            name="📦 Inversiones",
+            value=f"`{len(inversiones)}`",
+            inline=True
+        )
+
+        embed.set_footer(
+            text="Violet Market • Mi inversión"
+        )
+
+        await interaction.response.send_message(
+            embed=embed,
+            ephemeral=True
+        )
+
+    @discord.ui.button(
+        label="Estadísticas",
+        emoji="📊",
+        style=discord.ButtonStyle.secondary,
+        custom_id="violet_market_estadisticas"
+    )
+    async def estadisticas_button(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "❌ Este botón solo funciona en servidores.",
+                ephemeral=True
+            )
+            return
+
+        historial = await database.get_violet_investment_history(
+            interaction.user.id,
+            interaction.guild.id,
+            100
+        )
+
+        if not historial:
+            await interaction.response.send_message(
+                "📊 **Estadísticas del inversor**\n\n"
+                "Todavía no tienes operaciones cerradas.",
+                ephemeral=True
+            )
+            return
+
+        total_operaciones = len(historial)
+        ganancias = sum(
+            float(registro[6])
+            for registro in historial
+            if float(registro[6]) > 0
+        )
+        perdidas = sum(
+            float(registro[6])
+            for registro in historial
+            if float(registro[6]) < 0
+        )
+
+        resultado_total = ganancias + perdidas
+
+        mejor = max(
+            historial,
+            key=lambda registro: float(registro[6])
+        )
+
+        peor = min(
+            historial,
+            key=lambda registro: float(registro[6])
+        )
+
+        rendimiento_promedio = sum(
+            float(registro[7])
+            for registro in historial
+        ) / total_operaciones
+
+        if resultado_total > 0:
+            tendencia = "📈"
+        elif resultado_total < 0:
+            tendencia = "📉"
+        else:
+            tendencia = "➖"
+
+        embed = discord.Embed(
+            title="📊 Estadísticas del inversor",
+            description=(
+                f"👤 **Inversor:** {interaction.user.mention}\n\n"
+                f"🔢 **Operaciones cerradas:** "
+                f"`{total_operaciones}`\n"
+                f"📈 **Ganancias:** "
+                f"`+{ganancias:,.2f} 🪙`\n"
+                f"📉 **Pérdidas:** "
+                f"`{perdidas:,.2f} 🪙`\n"
+                f"{tendencia} **Resultado neto:** "
+                f"`{resultado_total:+,.2f} 🪙`\n"
+                f"📊 **Rendimiento promedio:** "
+                f"`{rendimiento_promedio:+.2f}%`"
+            ),
+            color=discord.Color.purple()
+        )
+
+        embed.add_field(
+            name="🏆 Mejor inversión",
+            value=(
+                f"#{mejor[1]} • "
+                f"**{float(mejor[6]):+,.2f} 🪙**\n"
+                f"Rendimiento: "
+                f"**{float(mejor[7]):+.2f}%**"
+            ),
+            inline=True
+        )
+
+        embed.add_field(
+            name="📉 Peor inversión",
+            value=(
+                f"#{peor[1]} • "
+                f"**{float(peor[6]):+,.2f} 🪙**\n"
+                f"Rendimiento: "
+                f"**{float(peor[7]):+.2f}%**"
+            ),
+            inline=True
+        )
+
+        embed.set_footer(
+            text="Violet Market • Estadísticas"
+        )
+
+        await interaction.response.send_message(
+            embed=embed,
+            ephemeral=True
+        )
+
+    @discord.ui.button(
+        label="Gráfico VLC",
+        emoji="📈",
+        style=discord.ButtonStyle.secondary,
+        custom_id="violet_market_grafico"
+    )
+    async def grafico_button(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "❌ Este botón solo funciona en servidores.",
+                ephemeral=True
+            )
+            return
+
+        historial = await database.get_violet_market_history(20)
+
+        if not historial:
+            await interaction.response.send_message(
+                "📈 **Gráfico VLC**\n\n"
+                "Todavía no hay datos suficientes del mercado.",
+                ephemeral=True
+            )
+            return
+
+        precios = [
+            float(registro[0])
+            for registro in historial
+        ]
+
+        precios.reverse()
+
+        minimo = min(precios)
+        maximo = max(precios)
+        actual = precios[-1]
+        inicial = precios[0]
+
+        if inicial > 0:
+            cambio_acumulado = (
+                (actual - inicial) / inicial
+            ) * 100
+        else:
+            cambio_acumulado = 0
+
+        if cambio_acumulado > 0:
+            tendencia = "📈 Alcista"
+        elif cambio_acumulado < 0:
+            tendencia = "📉 Bajista"
+        else:
+            tendencia = "➖ Estable"
+
+        niveles = "▁▂▃▄▅▆▇█"
+        barras = []
+
+        if maximo == minimo:
+            barras = ["█"] * len(precios)
+
+        else:
+            for precio in precios:
+
+                nivel = int(
+                    ((precio - minimo) /
+                     (maximo - minimo)) * 7
+                )
+
+                nivel = max(0, min(7, nivel))
+
+                barras.append(
+                    niveles[nivel]
+                )
+
+        grafico = "".join(barras)
+
+        embed = discord.Embed(
+            title="📈 Evolución de VLC",
+            description=(
+                "Últimos movimientos registrados del mercado.\n\n"
+                f"```{grafico}```\n"
+                f"💰 **Precio actual:** `{actual:,.2f}`\n"
+                f"🟣 **Precio inicial:** `{inicial:,.2f}`\n"
+                f"🔻 **Mínimo:** `{minimo:,.2f}`\n"
+                f"🔺 **Máximo:** `{maximo:,.2f}`\n"
+                f"📊 **Tendencia:** **{tendencia}**\n"
+                f"📈 **Cambio acumulado:** "
+                f"`{cambio_acumulado:+.2f}%`\n"
+                f"🧾 **Registros:** `{len(precios)}`"
+            ),
+            color=discord.Color.purple()
+        )
+
+        embed.set_footer(
+            text="Violet Market • Evolución VLC"
+        )
+
+        await interaction.response.send_message(
+            embed=embed,
+            ephemeral=True
+        )
+
+    @discord.ui.button(
+        label="Mercado",
+        emoji="📊",
+        style=discord.ButtonStyle.secondary,
+        custom_id="violet_market_info"
+    )
+    async def mercado_button(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+
+        datos = await database.get_violet_market()
+
+        if datos is None:
+            await interaction.response.send_message(
+                "❌ El mercado todavía no está disponible.",
+                ephemeral=True
+            )
+            return
+
+        (
+            precio,
+            precio_anterior,
+            maximo,
+            minimo,
+            total_invertido,
+            ultima_actualizacion
+        ) = datos
+
+        precio = float(precio)
+        precio_anterior = float(precio_anterior)
+
+        if precio_anterior > 0:
+            cambio = (
+                (precio - precio_anterior)
+                / precio_anterior
+            ) * 100
+        else:
+            cambio = 0
+
+        if cambio > 0:
+            tendencia = "📈"
+        elif cambio < 0:
+            tendencia = "📉"
+        else:
+            tendencia = "➖"
+
+        embed = discord.Embed(
+            title="💜 Violet Market",
+            description=(
+                "Mercado virtual de **Violet Coin (VLC)**\n\n"
+                f"{tendencia} **Precio actual:** "
+                f"`{precio:,.2f} VLC`\n"
+                f"📊 **Variación:** "
+                f"`{cambio:+.2f}%`"
+            ),
+            color=discord.Color.purple()
+        )
+
+        embed.add_field(
+            name="📈 Máximo histórico",
+            value=f"`{float(maximo):,.2f} VLC`",
+            inline=True
+        )
+
+        embed.add_field(
+            name="📉 Mínimo histórico",
+            value=f"`{float(minimo):,.2f} VLC`",
+            inline=True
+        )
+
+        embed.add_field(
+            name="💰 Total invertido",
+            value=f"`{float(total_invertido):,.2f} 🪙`",
+            inline=False
+        )
+
+        embed.set_footer(
+            text="Violet Market • Información"
+        )
+
+        await interaction.response.send_message(
+            embed=embed,
+            ephemeral=True
+        )
+
+    @discord.ui.button(
+        label="Actualizar",
+        emoji="🔄",
+        style=discord.ButtonStyle.secondary,
+        custom_id="violet_market_actualizar"
+    )
+    async def actualizar_button(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "❌ Este botón solo funciona en servidores.",
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(
+            ephemeral=True
+        )
+
+        await violet_market_publish(
+            interaction.guild
+        )
+
+        await interaction.followup.send(
+            "🔄 **Violet Market actualizado correctamente.**",
+            ephemeral=True
+        )
+
+
+    @discord.ui.button(
+        label="Historial",
+        emoji="📜",
+        style=discord.ButtonStyle.secondary,
+        custom_id="violet_market_historial"
+    )
+    async def historial_button(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "❌ Este botón solo funciona en servidores.",
+                ephemeral=True
+            )
+            return
+
+        historial = await database.get_violet_investment_history(
+            interaction.user.id,
+            interaction.guild.id,
+            10
+        )
+
+        if not historial:
+            await interaction.response.send_message(
+                "📜 **Historial de inversiones**\n\n"
+                "Todavía no tienes inversiones retiradas.",
+                ephemeral=True
+            )
+            return
+
+        embed = discord.Embed(
+            title="📜 Historial de inversiones",
+            description=(
+                "Tus últimas operaciones cerradas "
+                "en Violet Market."
+            ),
+            color=discord.Color.purple()
+        )
+
+        for registro in historial[:10]:
+
+            (
+                history_id,
+                investment_id,
+                amount,
+                buy_price,
+                sell_price,
+                value,
+                profit,
+                return_percent,
+                created_at,
+                closed_at
+            ) = registro
+
+            if profit > 0:
+                resultado = f"📈 +{profit:,.2f} 🪙"
+            elif profit < 0:
+                resultado = f"📉 {profit:,.2f} 🪙"
+            else:
+                resultado = "➖ 0.00 🪙"
+
+            embed.add_field(
+                name=f"💰 Inversión #{investment_id}",
+                value=(
+                    f"Capital: `{amount:,.2f} 🪙`\n"
+                    f"Compra: `{buy_price:,.2f}` → "
+                    f"Venta: `{sell_price:,.2f}`\n"
+                    f"Resultado: **{resultado}**\n"
+                    f"Rendimiento: "
+                    f"**{return_percent:+.2f}%**"
+                ),
+                inline=False
+            )
+
+        embed.set_footer(
+            text="Violet Market • Historial"
+        )
+
+        await interaction.response.send_message(
+            embed=embed,
+            ephemeral=True
+        )
+
+    @discord.ui.button(
+        label="Retirar",
+        emoji="💸",
+        style=discord.ButtonStyle.danger,
+        custom_id="violet_market_retirar"
+    )
+    async def retirar_button(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "❌ Este botón solo funciona en servidores.",
+                ephemeral=True
+            )
+            return
+
+        inversiones = await database.get_violet_investments(
+            interaction.user.id,
+            interaction.guild.id
+        )
+
+        if not inversiones:
+            await interaction.response.send_message(
+                "💸 **Retirar inversión**\n\n"
+                "No tienes inversiones activas para retirar.",
+                ephemeral=True
+            )
+            return
+
+        opciones = []
+
+        for inversion in inversiones[:25]:
+            investment_id = inversion[0]
+            amount = float(inversion[1])
+            buy_price = float(inversion[2])
+
+            opciones.append(
+                discord.SelectOption(
+                    label=f"Inversión #{investment_id}",
+                    description=f"Capital: {amount:,.2f} 🪙",
+                    value=str(investment_id),
+                    emoji="💰"
+                )
+            )
+
+        class RetirarInvestmentSelect(discord.ui.Select):
+
+            def __init__(self):
+                super().__init__(
+                    placeholder="Selecciona la inversión que quieres retirar",
+                    min_values=1,
+                    max_values=1,
+                    options=opciones
+                )
+
+            async def callback(
+                self,
+                select_interaction: discord.Interaction
+            ):
+
+                investment_id = int(self.values[0])
+
+                inversion = await database.get_violet_investment(
+                    investment_id,
+                    select_interaction.user.id,
+                    select_interaction.guild.id
+                )
+
+                if inversion is None:
+                    await select_interaction.response.send_message(
+                        "❌ Esa inversión ya no existe.",
+                        ephemeral=True
+                    )
+                    return
+
+                datos = await database.get_violet_market()
+
+                if datos is None:
+                    await select_interaction.response.send_message(
+                        "❌ El mercado todavía no está disponible.",
+                        ephemeral=True
+                    )
+                    return
+
+                precio_actual = float(datos[0])
+
+                amount = float(inversion[1])
+                buy_price = float(inversion[2])
+
+                if buy_price <= 0:
+                    await select_interaction.response.send_message(
+                        "❌ No se puede calcular el valor de esta inversión.",
+                        ephemeral=True
+                    )
+                    return
+
+                valor_actual = (
+                    amount * precio_actual / buy_price
+                )
+
+                ganancia = valor_actual - amount
+
+                if amount > 0:
+                    rendimiento = (
+                        (ganancia / amount) * 100
+                    )
+                else:
+                    rendimiento = 0
+
+                from datetime import datetime, UTC
+
+                await database.add_balance(
+                    select_interaction.user.id,
+                    select_interaction.guild.id,
+                    valor_actual
+                )
+
+                await database.record_violet_investment_history(
+                    investment_id,
+                    select_interaction.user.id,
+                    select_interaction.guild.id,
+                    amount,
+                    buy_price,
+                    precio_actual,
+                    valor_actual,
+                    ganancia,
+                    rendimiento,
+                    inversion[3],
+                    datetime.now(UTC).isoformat()
+                )
+
+                await database.delete_violet_investment(
+                    investment_id,
+                    select_interaction.user.id,
+                    select_interaction.guild.id,
+                    amount
+                )
+
+                if ganancia > 0:
+                    resultado = f"📈 Ganancia: **+{ganancia:,.2f} 🪙**"
+                elif ganancia < 0:
+                    resultado = f"📉 Pérdida: **{ganancia:,.2f} 🪙**"
+                else:
+                    resultado = "➖ Sin ganancias ni pérdidas."
+
+                embed = discord.Embed(
+                    title="💸 Inversión retirada",
+                    description=(
+                        f"Has retirado la inversión **#{investment_id}**.\n\n"
+                        f"💰 Capital original: **{amount:,.2f} 🪙**\n"
+                        f"📊 Valor actual: **{valor_actual:,.2f} 🪙**\n"
+                        f"{resultado}\n\n"
+                        "Las monedas fueron devueltas a tu saldo."
+                    ),
+                    color=discord.Color.purple()
+                )
+
+                embed.set_footer(
+                    text="Violet Market • Retiro"
+                )
+
+                await select_interaction.response.edit_message(
+                    embed=embed,
+                    view=None
+                )
+
+        class RetirarInvestmentView(discord.ui.View):
+
+            def __init__(self):
+                super().__init__(timeout=60)
+                self.add_item(RetirarInvestmentSelect())
+
+        await interaction.response.send_message(
+            "💸 **Retirar inversión**\n\n"
+            "Selecciona cuál de tus inversiones quieres retirar:",
+            view=RetirarInvestmentView(),
+            ephemeral=True
+        )
+
+
+# =========================================================
+# 💰 VIOLET MARKET — INVERTIR
+# =========================================================
+# =========================================================
+# 💰 VIOLET MARKET — INVERTIR
+# =========================================================
+
+@bot.tree.command(
+    name="invertir",
+    description="Invierte monedas en Violet Market"
+)
+@app_commands.describe(
+    cantidad="Cantidad de monedas que quieres invertir"
+)
+async def invertir(
+    interaction: discord.Interaction,
+    cantidad: int
+):
+
+    if interaction.guild is None:
+        await interaction.response.send_message(
+            "❌ Este comando solo funciona en servidores.",
+            ephemeral=True
+        )
+        return
+
+    if cantidad <= 0:
+        await interaction.response.send_message(
+            "❌ La cantidad debe ser mayor que 0.",
+            ephemeral=True
+        )
+        return
+
+    datos = await database.get_violet_market()
+
+    if datos is None:
+        await interaction.response.send_message(
+            "❌ El mercado todavía no está disponible.",
+            ephemeral=True
+        )
+        return
+
+    precio_actual = float(datos[0])
+
+    usuario = await database.get_user(
+        interaction.user.id,
+        interaction.guild.id
+    )
+
+    if usuario is None:
+        await interaction.response.send_message(
+            "❌ No tienes una cuenta económica creada.",
+            ephemeral=True
+        )
+        return
+
+    saldo = usuario[2]
+
+    if saldo < cantidad:
+        await interaction.response.send_message(
+            f"❌ No tienes suficientes monedas.\n"
+            f"💰 Saldo: **{saldo:,} 🪙**\n"
+            f"📈 Necesitas: **{cantidad:,} 🪙**",
+            ephemeral=True
+        )
+        return
+
+    await database.remove_balance(
+        interaction.user.id,
+        interaction.guild.id,
+        cantidad
+    )
+
+    await database.create_violet_investment(
+        interaction.user.id,
+        interaction.guild.id,
+        cantidad,
+        precio_actual,
+        __import__("datetime").datetime.now(
+            __import__("datetime").UTC
+        ).isoformat()
+    )
+
+    embed = discord.Embed(
+        title="💜 Inversión realizada",
+        description=(
+            f"Has invertido **{cantidad:,} 🪙** en Violet Market.\n\n"
+            f"📈 Precio VLC: **{precio_actual:,.2f}**\n"
+            f"💰 Capital invertido: **{cantidad:,} 🪙**\n\n"
+            "Tu inversión cambiará de valor según el mercado."
+        ),
+        color=discord.Color.purple()
+    )
+
+    embed.set_footer(
+        text="Violet Market • Inversión"
+    )
+
+    await interaction.response.send_message(
+        embed=embed
+    )
+# =========================================================
+# 📈 VIOLET MARKET — PANEL PRINCIPAL
+# =========================================================
+
+@bot.tree.command(
+    name="mercado",
+    description="Muestra el mercado de Violet Coin"
+)
+async def mercado(interaction: discord.Interaction):
+
+    if interaction.guild is None:
+        await interaction.response.send_message(
+            "❌ Este comando solo funciona en servidores.",
+            ephemeral=True
+        )
+        return
+
+    datos = await database.get_violet_market()
+
+    if datos is None:
+        await interaction.response.send_message(
+            "❌ El mercado todavía no está disponible.",
+            ephemeral=True
+        )
+        return
+
+    (
+        precio,
+        precio_anterior,
+        maximo,
+        minimo,
+        total_invertido,
+        ultima_actualizacion
+    ) = datos
+
+    if precio_anterior > 0:
+        cambio = (
+            (precio - precio_anterior)
+            / precio_anterior
+        ) * 100
+    else:
+        cambio = 0
+
+    if cambio > 0:
+        tendencia = "📈"
+    elif cambio < 0:
+        tendencia = "📉"
+    else:
+        tendencia = "➖"
+
+    embed = discord.Embed(
+        title="💜 Violet Market",
+        description=(
+            "Mercado virtual de **Violet Coin (VLC)**\n\n"
+            f"{tendencia} **Precio actual:** `{precio:,.2f} VLC`\n"
+            f"📊 **Variación:** `{cambio:+.2f}%`"
+        ),
+        color=discord.Color.purple()
+    )
+
+    embed.add_field(
+        name="📈 Máximo histórico",
+        value=f"`{maximo:,.2f} VLC`",
+        inline=True
+    )
+
+    embed.add_field(
+        name="📉 Mínimo histórico",
+        value=f"`{minimo:,.2f} VLC`",
+        inline=True
+    )
+
+    embed.add_field(
+        name="💰 Total invertido",
+        value=f"`{total_invertido:,.2f} VLC`",
+        inline=False
+    )
+
+    embed.add_field(
+        name="💡 ¿Cómo funciona?",
+        value=(
+            "Invierte tus monedas en VLC y su valor cambiará "
+            "automáticamente con el mercado.\n\n"
+            "📈 Si sube, puedes obtener ganancias.\n"
+            "📉 Si baja, puedes tener pérdidas."
+        ),
+        inline=False
+    )
+
+    embed.set_footer(
+        text="Violet Market • Mercado virtual"
+    )
+
+    await interaction.response.send_message(
+        embed=embed
+    )
+
+
+# =========================================================
+# 🛡️ VIOLET SECURITY — COMANDO PRINCIPAL
+# =========================================================
+
+
+class VioletSecurityMainView(discord.ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=180)
+
+    @discord.ui.button(label="Anti-Spam", emoji="🛡️", style=discord.ButtonStyle.primary, row=0)
+    async def antispam(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            "🛡️ **Anti-Spam**\n\nProtección contra mensajes repetitivos y flood.\n\nEstado: **ACTIVO**",
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="Anti-Raid", emoji="🚨", style=discord.ButtonStyle.danger, row=0)
+    async def antiraid(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            "🚨 **Anti-Raid**\n\nProtección contra entradas masivas de usuarios.\n\nEstado: **ACTIVO**",
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="Anti-Nuke", emoji="☢️", style=discord.ButtonStyle.danger, row=0)
+    async def antinuke(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            "☢️ **Anti-Nuke**\n\nProtección contra acciones destructivas del servidor.\n\nEstado: **ACTIVO**",
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="Enlaces", emoji="🔗", style=discord.ButtonStyle.secondary, row=1)
+    async def enlaces(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            "🔗 **Protección de enlaces**\n\nSistema preparado para detectar enlaces sospechosos.",
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="Estadísticas", emoji="📊", style=discord.ButtonStyle.secondary, row=1)
+    async def estadisticas(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            "📊 **Estadísticas de seguridad**\n\n🛡️ Amenazas bloqueadas: 0\n🚨 Raids detectados: 0\n🔗 Enlaces bloqueados: 0\n⚠️ Alertas: 0",
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="Configuración", emoji="⚙️", style=discord.ButtonStyle.secondary, row=1)
+    async def configuracion(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            "⚙️ **Configuración de Violet Security**\n\nLos módulos de seguridad están preparados para configurarse desde este centro.",
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="Cuarentena", emoji="🔒", style=discord.ButtonStyle.secondary, row=2)
+    async def cuarentena(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            "🔒 **Cuarentena**\n\nSistema de aislamiento de usuarios sospechosos.",
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="Registros", emoji="📋", style=discord.ButtonStyle.secondary, row=2)
+    async def registros(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            "📋 **Registros de seguridad**\n\nNo hay incidentes recientes registrados.",
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="Volver", emoji="↩️", style=discord.ButtonStyle.secondary, row=3)
+    async def volver(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(
+            embed=violet_main_embed(),
+            view=VioletMainView()
+        )
+
+
+@bot.tree.command(
+    name="seguridad",
+    description="Abre el Centro de Seguridad de Violet."
+)
+@app_commands.checks.has_permissions(manage_guild=True)
+async def seguridad(interaction: discord.Interaction):
+
+    embed = discord.Embed(
+        title="🛡️ VIOLET SECURITY",
+        description=(
+            "Centro de seguridad y protección de tu servidor.\n\n"
+            "Selecciona una función para administrar la seguridad."
+        ),
+        color=discord.Color.purple()
+    )
+
+    embed.add_field(
+        name="🛡️ Protección",
+        value=(
+            "Anti-Spam\n"
+            "Anti-Raid\n"
+            "Anti-Nuke\n"
+            "Protección de enlaces"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="📊 Sistema",
+        value="Estadísticas y registros de seguridad",
+        inline=False
+    )
+
+    await interaction.response.send_message(
+        embed=embed,
+        view=VioletSecurityMainView(),
+        ephemeral=True
+    )
+
+
+@seguridad.error
+async def seguridad_error(
+    interaction: discord.Interaction,
+    error
+):
+    if isinstance(error, app_commands.errors.MissingPermissions):
+        await interaction.response.send_message(
+            "❌ Necesitas el permiso **Gestionar servidor** para usar Violet Security.",
+            ephemeral=True
+        )
+    else:
+        print(f"❌ Error /seguridad: {error}")
+
+
 if __name__ == "__main__":
     if not TOKEN:
         print("❌ ERROR: No existe DISCORD_TOKEN.")
     else:
         print("💜 Iniciando Violet...")
         bot.run(TOKEN)
+
+
+# VIOLET RANGOS - INICIALIZACIÓN
+async def _violet_cargar_rangos():
+    try:
+        await instalar_rangos(bot, arbol, database)
+    except Exception as e:
+        print(f"⚠️ Error cargando rangos: {e}")
+
