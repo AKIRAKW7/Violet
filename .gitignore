@@ -9,3 +9,25 @@ bot_backup_*.py
 database_backup_*.py
 bot.p
 bot.py.*
+
+# Violet backups locales
+*.bak
+*.backup
+*.backup_*
+*.antes_*
+*.estado_funcional_*
+*.market_backup
+*.market_5min_backup
+*.security_backup
+*.rangos_*
+database.py.before_*
+rangos.py.antes_*
+rangos.py.botones_backup_*
+
+# Base de datos local
+*.db
+*.db-journal
+
+# Python
+__pycache__/
+*.pyc
