@@ -27,10 +27,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
             event.preventDefault();
 
-            if (INVITE_URL.includes("1545625028714958990")) {
-                alert(
-                    "Configura primero el Application ID de Violet en script.js."
-                );
+            if (!INVITE_URL || !INVITE_URL.includes("1545625028714958990")) {
+                alert("No se pudo configurar el enlace de invitación de Violet.");
                 return;
             }
 
