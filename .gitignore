@@ -13,3 +13,5 @@ bot_final_*.py
 bot_pre_*.py
 
 *.db
+
+*.db
