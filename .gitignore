@@ -1,33 +1,39 @@
-__pycache__/
-*.pyc
-*.db
-*.backup*
-bot.py.save.*
-earch pynacl
+﻿# Entorno local
 .env
-bot_backup_*.py
-database_backup_*.py
-bot.p
-bot.py.*
+.venv/
+venv/
 
-# Violet backups locales
+# Python
+__pycache__/
+*.py[cod]
+*.class
+
+# Bases de datos locales
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Copias de seguridad
 *.bak
 *.backup
 *.backup_*
+*.backup*
 *.antes_*
 *.estado_funcional_*
 *.market_backup
 *.market_5min_backup
 *.security_backup
 *.rangos_*
+bot.py.save*
+bot_backup_*.py
+database_backup_*.py
 database.py.before_*
 rangos.py.antes_*
 rangos.py.botones_backup_*
 
-# Base de datos local
-*.db
-*.db-journal
-
-# Python
-__pycache__/
-*.pyc
+# Archivos temporales
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
