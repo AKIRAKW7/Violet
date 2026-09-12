@@ -1,5 +1,9 @@
 from rangos import instalar as instalar_rangos
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import random
 import hashlib
 import asyncio
