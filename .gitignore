@@ -1,39 +1,13 @@
-﻿# Entorno local
-.env
-.venv/
-venv/
-
-# Python
+﻿.env
+.ev
 __pycache__/
-*.py[cod]
-*.class
-
-# Bases de datos locales
-*.db
-*.db-journal
-*.sqlite
-*.sqlite3
-
-# Copias de seguridad
-*.bak
+*.pyc
 *.backup
-*.backup_*
-*.backup*
-*.antes_*
-*.estado_funcional_*
-*.market_backup
-*.market_5min_backup
-*.security_backup
-*.rangos_*
-bot.py.save*
-bot_backup_*.py
-database_backup_*.py
-database.py.before_*
-rangos.py.antes_*
-rangos.py.botones_backup_*
-
-# Archivos temporales
-*.tmp
-*.temp
-.DS_Store
-Thumbs.db
+*.txt
+comprobar_*.py
+escanear_*.py
+reparar_*.py
+revisar_*.py
+bot_antes_*.py
+bot_final_*.py
+bot_pre_*.py
