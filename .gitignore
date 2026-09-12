@@ -11,3 +11,5 @@ revisar_*.py
 bot_antes_*.py
 bot_final_*.py
 bot_pre_*.py
+
+*.db
